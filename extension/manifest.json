@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "SEI Assistant — TJPE",
+  "version": "0.1.0",
+  "description": "Sistema de apoio ao SEI para o TJPE",
+
+  "permissions": [
+    "storage",
+    "sidePanel",
+    "tabs",
+    "cookies"
+  ],
+
+  "host_permissions": [
+    "https://sei.cloud.tjpe.jus.br/*"
+  ],
+
+  "background": {
+    "service_worker": "dist/background/index.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["https://sei.cloud.tjpe.jus.br/*"],
+      "js": ["dist/content/index.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "side_panel": {
+    "default_path": "sidebar/index.html"
+  },
+
+  "action": {
+    "default_title": "SEI Assistant",
+    "default_icon": {
+      "16": "assets/icon-16.png",
+      "48": "assets/icon-48.png",
+      "128": "assets/icon-128.png"
+    }
+  },
+
+  "icons": {
+    "16": "assets/icon-16.png",
+    "48": "assets/icon-48.png",
+    "128": "assets/icon-128.png"
+  }
+}
