@@ -4,6 +4,7 @@ import { resolve } from "path";
 
 export default defineConfig({
   plugins: [react()],
+  base: "./",
   build: {
     outDir: "dist",
     emptyOutDir: true,
@@ -11,7 +12,7 @@ export default defineConfig({
       input: {
         background: resolve(__dirname, "src/background/index.ts"),
         content: resolve(__dirname, "src/content/index.ts"),
-        sidebar: resolve(__dirname, "src/sidebar/index.html"),
+        sidebar: resolve(__dirname, "sidebar.html"),
       },
       output: {
         entryFileNames: "[name]/index.js",

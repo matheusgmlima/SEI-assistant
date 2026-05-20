@@ -29,21 +29,10 @@
   ],
 
   "side_panel": {
-    "default_path": "sidebar/index.html"
+    "default_path": "dist/sidebar.html"
   },
 
   "action": {
-    "default_title": "SEI Assistant",
-    "default_icon": {
-      "16": "assets/icon-16.png",
-      "48": "assets/icon-48.png",
-      "128": "assets/icon-128.png"
-    }
-  },
-
-  "icons": {
-    "16": "assets/icon-16.png",
-    "48": "assets/icon-48.png",
-    "128": "assets/icon-128.png"
+    "default_title": "SEI Assistant"
   }
 }
