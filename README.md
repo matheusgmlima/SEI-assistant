@@ -58,8 +58,8 @@ npm install -g pnpm
 ## Instalação
 
 ```bash
-git clone https://github.com/matheusgmlima/SEI-assistent.git
-cd SEI-assistent
+git clone https://github.com/matheusgmlima/SEI-assistant.git
+cd SEI-assistant
 pnpm install
 ```
 
@@ -111,8 +111,8 @@ A extensão nunca armazena credenciais. Ela piggybacka a sessão já autenticada
 ## Funcionalidades planejadas
 
 - [x] Scaffold do projeto (extensão + dashboard + shared)
-- [ ] Detecção de sessão (content script)
-- [ ] Sidebar — layout base
+- [x] Detecção de sessão (content script)
+- [x] Sidebar — layout base
 - [ ] Dashboard — layout base
 - [ ] Listagem de processos recebidos
 - [ ] Extração de histórico de processos
