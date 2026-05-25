@@ -6,7 +6,9 @@ export type MessageType =
   | "SESSION_DETECTED"
   | "SESSION_ENDED"
   | "GET_SESSION"
+  | "COLLECT_PROCESSES"
   | "PROCESSES_COLLECTED"
+  | "SUMMARIZE_PROCESS"
   | "OPEN_DASHBOARD";
 
 export interface ExtMessage<T = unknown> {

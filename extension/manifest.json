@@ -12,7 +12,10 @@
   ],
 
   "host_permissions": [
-    "https://sei.cloud.tjpe.jus.br/*"
+    "https://sei.cloud.tjpe.jus.br/*",
+    "https://api.groq.com/*",
+    "https://api.openai.com/*",
+    "https://api.anthropic.com/*"
   ],
 
   "background": {
@@ -24,7 +27,8 @@
     {
       "matches": ["https://sei.cloud.tjpe.jus.br/*"],
       "js": ["dist/content/index.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ],
 
