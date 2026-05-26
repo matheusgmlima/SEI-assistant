@@ -288,13 +288,27 @@ function ProcessDetailScreen({
             </div>
           )}
 
-          {/* Documentos */}
-          {details.documents.length > 0 && (
-            <div className="detail-section">
-              <p className="detail-section-title">Documentos ({details.documents.length})</p>
-              <p className="detail-docs">{details.documents.slice(0, 8).join(" · ")}</p>
-            </div>
-          )}
+          {/* Documentos — Despachos */}
+          {details.documents.length > 0 && (() => {
+            const despachos = details.documents.filter(d => /despacho/i.test(d));
+            const outros = details.documents.filter(d => !/despacho/i.test(d));
+            return (
+              <>
+                {despachos.length > 0 && (
+                  <div className="detail-section">
+                    <p className="detail-section-title">Despachos ({despachos.length})</p>
+                    <p className="detail-docs">{despachos.join(" · ")}</p>
+                  </div>
+                )}
+                {outros.length > 0 && (
+                  <div className="detail-section">
+                    <p className="detail-section-title">Outros documentos ({outros.length})</p>
+                    <p className="detail-docs">{outros.slice(0, 10).join(" · ")}{outros.length > 10 ? ` · +${outros.length - 10} mais` : ""}</p>
+                  </div>
+                )}
+              </>
+            );
+          })()}
 
           {/* Resumo IA */}
           <div className="detail-section" ref={summaryRef}>

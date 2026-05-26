@@ -26,7 +26,7 @@ function safeStorageSet(data: Record<string, unknown>) {
 const AUTHENTICATED_ACTIONS = [
   "principal", "arvore_visualizar", "processo_visualizar",
   "documento_visualizar", "controlador_ajax",
-  "procedimento_controlar", "procedimento_trabalhar",
+  "procedimento_controlar", "procedimento_trabalhar", "procedimento_visualizar",
 ];
 
 const SESSION_ANCHOR_SELECTOR = "#divInfraBarraSistema";
@@ -36,6 +36,7 @@ const DETAIL_ACTIONS = [
   "arvore_visualizar",
   "procedimento_trabalhar",
   "processo_visualizar",
+  "procedimento_visualizar", // frame real que contém a árvore no SEI/TJPE
   "documento_visualizar",
 ];
 
@@ -158,12 +159,12 @@ function getCurrentProcessId(): string | null {
   return bodyMatch?.[0] ?? null;
 }
 
-function extractDocumentsFromTree(): string[] {
+function extractDocumentsFromTree(): { titles: string[]; links: Record<string, string> } {
   const seen = new Set<string>();
-  const results: string[] = [];
+  const titles: string[] = [];
+  const links: Record<string, string> = {};
 
   function add(el: Element) {
-    // Pega texto direto do elemento sem filhos (ignora badge de unidade)
     const direct = Array.from(el.childNodes)
       .filter((n) => n.nodeType === Node.TEXT_NODE)
       .map((n) => n.textContent ?? "")
@@ -174,25 +175,30 @@ function extractDocumentsFromTree(): string[] {
     if (
       text.length > 3 &&
       !PROCESS_NUMBER_REGEX.test(text) &&
-      !/^(I{1,3}|IV|V?I{0,3})$/.test(text) && // volumes
+      !/^(I{1,3}|IV|V?I{0,3})$/.test(text) &&
+      !/^Aguarde/i.test(text) &&
       !seen.has(text)
     ) {
       seen.add(text);
-      results.push(text);
+      titles.push(text);
+
+      // Captura o href do próprio elemento ou de um anchor filho
+      const anchor = (el.tagName === "A" ? el : el.querySelector("a")) as HTMLAnchorElement | null;
+      const href = anchor?.href ?? "";
+      if (href && href.includes("id_documento")) {
+        links[text] = href;
+      }
     }
   }
 
-  // Estratégia 1: id^='ancDocumento' — padrão SEI para links de documentos na árvore
-  document.querySelectorAll("[id^='ancDocumento']").forEach(add);
+  const isTreeFrame = getActionFromUrl(window.location.href) === "arvore_visualizar" ||
+    document.querySelectorAll(".infraArvoreNo").length > 0;
 
-  // Estratégia 2: links com id_documento no href (alguns documentos usam href direto)
+  document.querySelectorAll(".infraArvoreNo").forEach(add);
   document.querySelectorAll("a[href*='id_documento']").forEach(add);
-
-  // Estratégia 3: onclick com referência a documento
   document.querySelectorAll<HTMLAnchorElement>("a[onclick*='documento']").forEach(add);
 
-  // Estratégia 4: fallback por palavras-chave se ainda não temos nada
-  if (results.length === 0) {
+  if (titles.length === 0 && isTreeFrame) {
     const DOC_RE = /despacho|contrato|e-mail|email|ordem|recibo|ofício|publicação|relatório|memorando|certidão|documento|autorização|planilha|justificativa|solicitação|portaria|minuta|cronograma|termo|nota|ata|edital/i;
     document.querySelectorAll<HTMLAnchorElement>("a").forEach((a) => {
       const text = (a.textContent ?? "").trim();
@@ -200,7 +206,7 @@ function extractDocumentsFromTree(): string[] {
     });
   }
 
-  return results;
+  return { titles, links };
 }
 
 function extractAndamento(): AndamentoEntry[] {
@@ -245,53 +251,103 @@ function extractProcessHeaderInfo() {
   return result;
 }
 
+
 let detailDebounce: ReturnType<typeof setTimeout> | null = null;
+
+// Poll para árvore SEI carregada via AJAX — tenta até 15x com intervalo de 1s
+let treePoller: ReturnType<typeof setInterval> | null = null;
+let treePollerAttempts = 0;
+const TREE_POLL_MAX = 15;
+
+function startTreePoller(processId: string) {
+  if (treePoller) return; // já rodando
+  treePoller = setInterval(() => {
+    if (!isContextValid()) { clearInterval(treePoller!); treePoller = null; return; }
+    treePollerAttempts++;
+    const docs = document.querySelectorAll(".infraArvoreNo").length;
+    console.log(`[SEI Assistant] Árvore poll #${treePollerAttempts}: ${docs} nós`);
+    if (docs > 0 || treePollerAttempts >= TREE_POLL_MAX) {
+      clearInterval(treePoller!);
+      treePoller = null;
+      treePollerAttempts = 0;
+      if (docs > 0) doExtractAndSave(processId);
+    }
+  }, 1000);
+}
+
+function doExtractAndSave(id: string) {
+  if (!isContextValid()) return;
+  const storageKey = `proc_${id}`;
+  chrome.storage.local.get(storageKey, (result) => {
+    if (!isContextValid()) return;
+    const existing: Partial<ProcessDetails> = result[storageKey] ?? {};
+
+    const { titles: documents, links: docLinks } = extractDocumentsFromTree();
+    const andamento = extractAndamento();
+    const header = extractProcessHeaderInfo();
+
+    const hasRichData =
+      documents.length > 0 || andamento.length > 0 ||
+      header.type || header.description || header.currentUnit;
+
+    if (!hasRichData && existing.extractedAt && (existing.documents?.length ?? 0) > 0) return;
+
+    const finalDocs = documents.length > 0 ? documents : (existing.documents ?? []);
+    // Merge links: novos sobrescrevem os existentes
+    const finalLinks = { ...(existing.documentLinks ?? {}), ...docLinks };
+
+    // Se há novos documentos, invalida o cache do resumo e do conteúdo dos despachos
+    const docsChanged = documents.length > 0 && documents.length !== (existing.documents?.length ?? 0);
+
+    const updated: ProcessDetails = {
+      id,
+      type: header.type ?? existing.type ?? null,
+      description: header.description ?? existing.description ?? null,
+      currentUnit: header.currentUnit ?? existing.currentUnit ?? null,
+      parties: header.parties.length > 0 ? header.parties : (existing.parties ?? []),
+      documents: finalDocs,
+      documentLinks: finalLinks,
+      andamento: andamento.length > 0 ? andamento : (existing.andamento ?? []),
+      extractedAt: Date.now(),
+      summary: docsChanged ? null : (existing.summary ?? null),
+      despachosContent: docsChanged ? null : (existing.despachosContent ?? null),
+    };
+
+    safeStorageSet({ [storageKey]: updated });
+    console.log(`[SEI Assistant] Detalhes salvos para processo ${id}`, updated);
+  });
+}
 
 function tryExtractAndSaveDetails() {
   const action = getActionFromUrl(window.location.href);
   const hasAndamento = !!document.querySelector("#tblHistorico");
+  // Detecta frame da árvore pela URL OU pela presença dos nós —
+  // o SEI usa um iframe aninhado cujo URL pode não conter acao=arvore_visualizar
+  const hasTreeNodes = document.querySelectorAll(".infraArvoreNo").length > 0;
+  const isTreeFrame = action === "arvore_visualizar" || hasTreeNodes;
 
   // Só roda em frames relevantes
-  if (!hasAndamento && (!action || !DETAIL_ACTIONS.includes(action))) return;
+  if (!hasAndamento && !hasTreeNodes && (!action || !DETAIL_ACTIONS.includes(action))) return;
 
   if (detailDebounce) clearTimeout(detailDebounce);
   detailDebounce = setTimeout(() => {
     const id = getCurrentProcessId();
     if (!id) return;
 
-    const storageKey = `proc_${id}`;
+    // Frame da árvore: aguarda AJAX carregar os nós antes de extrair
+    if (isTreeFrame) {
+      const docsNow = document.querySelectorAll(".infraArvoreNo").length;
+      if (docsNow > 0) {
+        doExtractAndSave(id);
+      } else {
+        treePollerAttempts = 0;
+        startTreePoller(id);
+      }
+      return;
+    }
 
-    if (!isContextValid()) return;
-    chrome.storage.local.get(storageKey, (result) => {
-      if (!isContextValid()) return;
-      const existing: Partial<ProcessDetails> = result[storageKey] ?? {};
-
-      const documents = extractDocumentsFromTree();
-      const andamento = extractAndamento();
-      const header = extractProcessHeaderInfo();
-
-      const hasRichData =
-        documents.length > 0 || andamento.length > 0 ||
-        header.type || header.description || header.currentUnit;
-
-      // Se não tem dados ricos E já existe entrada completa, não sobrescreve
-      if (!hasRichData && existing.extractedAt && (existing.documents?.length ?? 0) > 0) return;
-
-      const updated: ProcessDetails = {
-        id,
-        type: header.type ?? existing.type ?? null,
-        description: header.description ?? existing.description ?? null,
-        currentUnit: header.currentUnit ?? existing.currentUnit ?? null,
-        parties: header.parties.length > 0 ? header.parties : (existing.parties ?? []),
-        documents: documents.length > 0 ? documents : (existing.documents ?? []),
-        andamento: andamento.length > 0 ? andamento : (existing.andamento ?? []),
-        extractedAt: Date.now(),
-        summary: existing.summary ?? null,
-      };
-
-      safeStorageSet({ [storageKey]: updated });
-      console.log(`[SEI Assistant] Detalhes salvos para processo ${id}`, updated);
-    });
+    // Outros frames: extrai andamento e metadados do header
+    doExtractAndSave(id);
   }, 600);
 }
 
@@ -300,6 +356,7 @@ function tryExtractAndSaveDetails() {
 if (isContextValid()) {
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!isContextValid()) { sendResponse({ ok: false }); return; }
+
     if (message.type === "COLLECT_PROCESSES") {
       if (isProcessListPage()) {
         tryCollectAndSave();
@@ -307,7 +364,9 @@ if (isContextValid()) {
       } else {
         sendResponse({ ok: false, onPage: false });
       }
+      return true;
     }
+
     return true;
   });
 }

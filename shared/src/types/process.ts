@@ -27,4 +27,6 @@ export interface ProcessDetails {
   andamento: AndamentoEntry[];
   extractedAt: number;
   summary: string | null; // resumo gerado pela IA, cacheado
+  despachosContent: string | null; // texto concatenado dos despachos
+  documentLinks: Record<string, string>; // título -> URL completa com hash correto
 }
