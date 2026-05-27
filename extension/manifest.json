@@ -8,7 +8,8 @@
     "storage",
     "sidePanel",
     "tabs",
-    "cookies"
+    "cookies",
+    "webRequest"
   ],
 
   "host_permissions": [

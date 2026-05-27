@@ -4,6 +4,97 @@ import type { AiConfig } from "../background/index";
 
 // ─── Tipos de view ──────────────────────────────────────────────────────────────
 type View = "main" | "processes" | "processDetail" | "settings";
+type DetailTab = "resumo" | "tramitacao";
+
+// ─── Utilitários de tramitação ──────────────────────────────────────────────────
+
+interface UnitPhase {
+  unit: string;
+  enteredAt: string | null;
+  leftAt: string | null;
+  durationDays: number | null;
+  despachos: string[];
+}
+
+function parseDate(s: string): Date | null {
+  const m = s.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+  if (!m) return null;
+  return new Date(`${m[3]}-${m[2]}-${m[1]}`);
+}
+
+function buildTramitacao(details: ProcessDetails): UnitPhase[] {
+  // Extrai unidade do título do despacho: "Despacho 3341475 UGP - BID" → "UGP - BID"
+  function unitFromDespacho(title: string): string {
+    const m = title.match(/despacho\s+\d+\s+(.*)/i);
+    return m?.[1]?.trim() ?? "";
+  }
+
+  // Agrupa despachos por unidade
+  const byUnit: Record<string, string[]> = {};
+  for (const doc of details.documents) {
+    if (/despacho/i.test(doc)) {
+      const u = unitFromDespacho(doc) || "—";
+      (byUnit[u] = byUnit[u] ?? []).push(doc);
+    }
+  }
+
+  if (details.andamento.length === 0) {
+    // Sem andamento: lista unidades dos despachos em ordem de aparição
+    // Filtra a entrada "—" que ocorre quando não há badge de unidade
+    return Object.entries(byUnit)
+      .filter(([unit]) => unit !== "—")
+      .map(([unit, despachos]) => ({
+        unit,
+        enteredAt: null,
+        leftAt: null,
+        durationDays: null,
+        despachos,
+      }));
+  }
+
+  // Com andamento: reconstrói fases por unidade
+  const phaseMap: Record<string, { entered: string; left: string | null }> = {};
+  const order: string[] = [];
+
+  for (const e of [...details.andamento].reverse()) {
+    const u = e.unit?.trim();
+    if (!u) continue;
+    if (!phaseMap[u]) {
+      phaseMap[u] = { entered: e.date, left: null };
+      order.push(u);
+    } else {
+      // atualiza a data mais recente como "left"
+      const entered = parseDate(phaseMap[u].entered);
+      const cur = parseDate(e.date);
+      if (cur && entered && cur > entered) {
+        phaseMap[u].left = e.date;
+      }
+    }
+  }
+
+  return order.map((unit) => {
+    const { entered, left } = phaseMap[unit];
+    let durationDays: number | null = null;
+    if (entered && left) {
+      const a = parseDate(entered), b = parseDate(left);
+      if (a && b) durationDays = Math.round(Math.abs(b.getTime() - a.getTime()) / 86400000);
+    }
+
+    // Match fuzzy de unidade: compara primeiras 6 letras
+    const key6 = unit.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
+    const matchedKey = Object.keys(byUnit).find((k) =>
+      k.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6) === key6
+    );
+
+    return {
+      unit,
+      enteredAt: entered,
+      leftAt: left,
+      durationDays,
+      despachos: matchedKey ? byUnit[matchedKey] : [],
+    };
+  });
+}
 
 // ─── AI Presets ─────────────────────────────────────────────────────────────────
 const AI_PRESETS: Record<string, { baseUrl: string; model: string; label: string }> = {
@@ -216,6 +307,59 @@ function SettingsScreen({ onBack }: { onBack: () => void }) {
   );
 }
 
+// ── Componente: Timeline de Tramitação ──────────────────────────────────────────
+function TramitacaoTimeline({ details }: { details: ProcessDetails }) {
+  const [expanded, setExpanded] = useState<Record<number, boolean>>({});
+  const phases = buildTramitacao(details);
+
+  if (phases.length === 0) {
+    return (
+      <div className="tram-empty">
+        <p>Dados insuficientes.</p>
+        <p className="tram-hint">Clique em <strong>Consultar Andamento</strong> no SEI e reabra o processo.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="tram-list">
+      {phases.map((phase, i) => (
+        <div key={i} className="tram-phase">
+          <div className="tram-connector">
+            <div className={`tram-dot ${i === phases.length - 1 ? "tram-dot--last" : ""}`} />
+            {i < phases.length - 1 && <div className="tram-line" />}
+          </div>
+          <div className="tram-content">
+            <p className="tram-unit">{phase.unit}</p>
+            <div className="tram-meta">
+              {phase.enteredAt && <span className="tram-date">Entrada: {phase.enteredAt}</span>}
+              {phase.leftAt   && <span className="tram-date">Saída: {phase.leftAt}</span>}
+              {phase.durationDays !== null && (
+                <span className="tram-duration">{phase.durationDays}d</span>
+              )}
+            </div>
+            {phase.despachos.length > 0 && (
+              <button
+                className="tram-toggle"
+                onClick={() => setExpanded((prev) => ({ ...prev, [i]: !prev[i] }))}
+              >
+                {expanded[i] ? "▾" : "▸"} {phase.despachos.length} despacho{phase.despachos.length > 1 ? "s" : ""}
+              </button>
+            )}
+            {expanded[i] && (
+              <ul className="tram-despachos">
+                {phase.despachos.map((d, j) => (
+                  <li key={j} className="tram-despacho-item">{d}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Tela: Detalhe do processo ───────────────────────────────────────────────────
 function ProcessDetailScreen({
   processId,
@@ -230,6 +374,7 @@ function ProcessDetailScreen({
   const { config } = useAiConfig();
   const hasApiKey = !!config?.apiKey;
   const summaryRef = useRef<HTMLDivElement>(null);
+  const [tab, setTab] = useState<DetailTab>("resumo");
 
   useEffect(() => {
     if (details?.summary && summaryRef.current) {
@@ -265,6 +410,24 @@ function ProcessDetailScreen({
       {details && (
         <div className="detail-body">
           {timeAgo && <p className="processes-meta">Dados coletados {timeAgo}</p>}
+
+          {/* Abas */}
+          <div className="detail-tabs">
+            <button
+              className={`detail-tab ${tab === "resumo" ? "detail-tab--active" : ""}`}
+              onClick={() => setTab("resumo")}
+            >Resumo</button>
+            <button
+              className={`detail-tab ${tab === "tramitacao" ? "detail-tab--active" : ""}`}
+              onClick={() => setTab("tramitacao")}
+            >Tramitação</button>
+          </div>
+
+          {/* Aba: Tramitação */}
+          {tab === "tramitacao" && <TramitacaoTimeline details={details} />}
+
+          {/* Aba: Resumo — conteúdo original */}
+          {tab === "resumo" && <>
 
           {/* Metadados */}
           {details.type && <div className="detail-field"><span className="detail-key">Tipo</span><span className="detail-val">{details.type}</span></div>}
@@ -357,6 +520,8 @@ function ProcessDetailScreen({
               </div>
             )}
           </div>
+
+          </> /* fim aba resumo */}
         </div>
       )}
     </div>

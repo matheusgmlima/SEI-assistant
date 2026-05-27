@@ -164,14 +164,7 @@ function extractDocumentsFromTree(): { titles: string[]; links: Record<string, s
   const titles: string[] = [];
   const links: Record<string, string> = {};
 
-  function add(el: Element) {
-    const direct = Array.from(el.childNodes)
-      .filter((n) => n.nodeType === Node.TEXT_NODE)
-      .map((n) => n.textContent ?? "")
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim();
-    const text = direct || el.textContent?.replace(/\s+/g, " ").trim() || "";
+  function addWithText(text: string, el: Element) {
     if (
       text.length > 3 &&
       !PROCESS_NUMBER_REGEX.test(text) &&
@@ -182,27 +175,79 @@ function extractDocumentsFromTree(): { titles: string[]; links: Record<string, s
       seen.add(text);
       titles.push(text);
 
-      // Captura o href do próprio elemento ou de um anchor filho
+      // Captura URL do anchor: tenta href, depois onclick
       const anchor = (el.tagName === "A" ? el : el.querySelector("a")) as HTMLAnchorElement | null;
-      const href = anchor?.href ?? "";
-      if (href && href.includes("id_documento")) {
-        links[text] = href;
+      if (anchor) {
+        const href = anchor.href ?? "";
+        if (href.includes("id_documento")) {
+          links[text] = href;
+        } else {
+          const onclick = anchor.getAttribute("onclick") ?? "";
+          const match = onclick.match(/controlador\.php[^'")\s]+/);
+          if (match) {
+            const raw = match[0];
+            links[text] = raw.startsWith("http")
+              ? raw
+              : `${window.location.origin}/sei/${raw}`;
+          }
+        }
       }
     }
+  }
+
+  // Wrapper legado: useFullText determina textContent vs text-nodes diretos
+  function add(el: Element, useFullText = false) {
+    const direct = Array.from(el.childNodes)
+      .filter((n) => n.nodeType === Node.TEXT_NODE)
+      .map((n) => n.textContent ?? "")
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const full = el.textContent?.replace(/\s+/g, " ").trim() ?? "";
+    const text = useFullText ? (full || direct) : (direct || full);
+    addWithText(text, el);
   }
 
   const isTreeFrame = getActionFromUrl(window.location.href) === "arvore_visualizar" ||
     document.querySelectorAll(".infraArvoreNo").length > 0;
 
-  document.querySelectorAll(".infraArvoreNo").forEach(add);
-  document.querySelectorAll("a[href*='id_documento']").forEach(add);
-  document.querySelectorAll<HTMLAnchorElement>("a[onclick*='documento']").forEach(add);
+  // Para nós da árvore: captura textContent do elemento + badge de unidade de irmãos no DOM
+  // (o SEI renderiza o badge como <span> irmão de .infraArvoreNo, fora do seu textContent)
+  document.querySelectorAll(".infraArvoreNo").forEach((el) => {
+    let text = el.textContent?.replace(/\s+/g, " ").trim() ?? "";
+
+    // Procura badge de unidade em elementos irmãos (spans curtos com texto em maiúsculas)
+    const parent = el.parentElement;
+    if (parent) {
+      for (const sib of parent.children) {
+        if (sib === el) continue;
+        const sibText = sib.textContent?.replace(/\s+/g, " ").trim() ?? "";
+        // Badge: curto (< 40 chars), não vazio, ainda não incluído no texto base
+        if (sibText.length > 0 && sibText.length < 40 && !text.includes(sibText)) {
+          text = `${text} ${sibText}`;
+          break;
+        }
+      }
+    }
+
+    addWithText(text, el);
+  });
+
+  // Salta anchors que já foram processados via .infraArvoreNo (evita duplicatas sem badge)
+  document.querySelectorAll("a[href*='id_documento']").forEach((el) => {
+    if (el.closest(".infraArvoreNo")) return;
+    add(el, false);
+  });
+  document.querySelectorAll<HTMLAnchorElement>("a[onclick*='documento']").forEach((el) => {
+    if (el.closest(".infraArvoreNo")) return;
+    add(el, false);
+  });
 
   if (titles.length === 0 && isTreeFrame) {
     const DOC_RE = /despacho|contrato|e-mail|email|ordem|recibo|ofício|publicação|relatório|memorando|certidão|documento|autorização|planilha|justificativa|solicitação|portaria|minuta|cronograma|termo|nota|ata|edital/i;
     document.querySelectorAll<HTMLAnchorElement>("a").forEach((a) => {
       const text = (a.textContent ?? "").trim();
-      if (DOC_RE.test(text) && text.length < 150 && !PROCESS_NUMBER_REGEX.test(text)) add(a);
+      if (DOC_RE.test(text) && text.length < 150 && !PROCESS_NUMBER_REGEX.test(text)) add(a, false);
     });
   }
 
@@ -296,8 +341,13 @@ function doExtractAndSave(id: string) {
     // Merge links: novos sobrescrevem os existentes
     const finalLinks = { ...(existing.documentLinks ?? {}), ...docLinks };
 
-    // Se há novos documentos, invalida o cache do resumo e do conteúdo dos despachos
-    const docsChanged = documents.length > 0 && documents.length !== (existing.documents?.length ?? 0);
+    // Invalida cache se os documentos mudaram (quantidade OU conteúdo do primeiro item)
+    const existingFirst = existing.documents?.[0] ?? "";
+    const newFirst = finalDocs[0] ?? "";
+    const docsChanged = documents.length > 0 && (
+      documents.length !== (existing.documents?.length ?? 0) ||
+      newFirst !== existingFirst
+    );
 
     const updated: ProcessDetails = {
       id,
@@ -312,6 +362,12 @@ function doExtractAndSave(id: string) {
       summary: docsChanged ? null : (existing.summary ?? null),
       despachosContent: docsChanged ? null : (existing.despachosContent ?? null),
     };
+
+    // Salva mapeamento processNumber → id_procedimento (numérico interno do SEI)
+    const internalId = new URL(window.location.href).searchParams.get("id_procedimento");
+    if (internalId) {
+      safeStorageSet({ [`procInternalId_${id}`]: internalId });
+    }
 
     safeStorageSet({ [storageKey]: updated });
     console.log(`[SEI Assistant] Detalhes salvos para processo ${id}`, updated);
@@ -371,6 +427,96 @@ if (isContextValid()) {
   });
 }
 
+// ─── Captura template de URL ao abrir documento ────────────────────────────────
+
+function trySaveDocUrlTemplate() {
+  const action = getActionFromUrl(window.location.href);
+  if (action !== "documento_visualizar") return;
+
+  const params = new URL(window.location.href).searchParams;
+  const hash = params.get("infra_hash");
+  const idDoc = params.get("id_documento");
+  if (!hash || !idDoc) return;
+
+  const template = {
+    origin: window.location.origin,
+    pathname: window.location.pathname,
+    infra_hash: hash,
+    infra_sistema: params.get("infra_sistema") ?? "100000100",
+    infra_unidade_atual: params.get("infra_unidade_atual") ?? "",
+  };
+  safeStorageSet({ docUrlTemplate: template });
+  console.log(`[SEI Assistant] Template de URL salvo (doc ${idDoc})`);
+}
+
+// ─── Captura URL do botão ZIP ───────────────────────────────────────────────────
+
+function trySaveZipUrl(processId: string) {
+  // Roda em qualquer frame autenticado que tenha a toolbar
+
+  // Estratégia 1: procura qualquer elemento com arquivo_gerar_zip em qualquer atributo
+  const allEls = document.querySelectorAll<HTMLElement>("*");
+  for (const el of allEls) {
+    const attrs = Array.from(el.attributes).map((a) => a.value).join(" ");
+    if (!attrs.includes("arquivo_gerar_zip")) continue;
+
+    // Tenta extrair URL de qualquer atributo
+    const match = attrs.match(/controlador\.php[^\s'"<>]+arquivo_gerar_zip[^\s'"<>]*/);
+    if (match) {
+      let zipUrl = match[0];
+      if (!zipUrl.startsWith("http")) zipUrl = `${window.location.origin}/sei/${zipUrl}`;
+      safeStorageSet({ [`zipUrl_${processId}`]: zipUrl });
+      console.log(`[SEI Assistant] URL do ZIP (estratégia 1):`, zipUrl);
+      return;
+    }
+  }
+
+  // Estratégia 2: encontra botão ZIP pelo title e constrói URL substituindo a ação
+  // (funciona se o infra_hash é de sessão e não por ação)
+  const currentParams = new URL(window.location.href).searchParams;
+  const currentAction = currentParams.get("acao");
+  const idProc = currentParams.get("id_procedimento");
+  const infraHash = currentParams.get("infra_hash");
+
+  if (idProc && infraHash) {
+    // Verifica se há um botão ZIP visível na página
+    const zipButton = Array.from(allEls).find((el) => {
+      const title = (el.getAttribute("title") ?? "").toLowerCase();
+      const alt = (el.getAttribute("alt") ?? "").toLowerCase();
+      const src = (el as HTMLImageElement).src ?? "";
+      return title.includes("zip") || alt.includes("zip") || src.toLowerCase().includes("zip");
+    });
+
+    if (zipButton) {
+      const qs = new URLSearchParams({
+        acao: "arquivo_gerar_zip",
+        id_procedimento: idProc,
+        infra_sistema: currentParams.get("infra_sistema") ?? "100000100",
+        infra_unidade_atual: currentParams.get("infra_unidade_atual") ?? "",
+        infra_hash: infraHash,
+      });
+      const zipUrl = `${window.location.origin}${window.location.pathname}?${qs}`;
+      safeStorageSet({ [`zipUrl_${processId}`]: zipUrl });
+      console.log(`[SEI Assistant] URL do ZIP (estratégia 2, hash reutilizado):`, zipUrl);
+      return;
+    }
+  }
+
+  // Estratégia 3: tenta construir diretamente se tiver id_procedimento na URL (sem botão ZIP)
+  if (idProc && infraHash && currentAction && ["procedimento_trabalhar", "arvore_visualizar"].includes(currentAction)) {
+    const qs = new URLSearchParams({
+      acao: "arquivo_gerar_zip",
+      id_procedimento: idProc,
+      infra_sistema: currentParams.get("infra_sistema") ?? "100000100",
+      infra_unidade_atual: currentParams.get("infra_unidade_atual") ?? "",
+      infra_hash: infraHash,
+    });
+    const zipUrl = `${window.location.origin}${window.location.pathname}?${qs}`;
+    safeStorageSet({ [`zipUrl_${processId}`]: zipUrl });
+    console.log(`[SEI Assistant] URL do ZIP (estratégia 3, construída):`, zipUrl);
+  }
+}
+
 // ─── Observador ─────────────────────────────────────────────────────────────────
 
 let lastKnownAuth = false;
@@ -392,6 +538,11 @@ function checkAndNotify() {
   if (currentlyAuth) {
     tryCollectAndSave();
     tryExtractAndSaveDetails();
+    trySaveDocUrlTemplate();
+
+    // Captura URL do ZIP para o processo atual
+    const currentId = getCurrentProcessId();
+    if (currentId) trySaveZipUrl(currentId);
   }
 }
 
