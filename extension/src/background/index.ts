@@ -9,6 +9,7 @@ import {
   upsertProcesso,
   upsertDespacho,
   replaceAndamentos,
+  mergeAndamentos,
   getAndamentosByProcesso,
   needsSync,
 } from "../db/index";
@@ -269,19 +270,20 @@ async function syncProcessoToDB(details: ProcessDetails): Promise<void> {
       });
     }
 
-    // Salva andamentos no banco (substitui todos)
+    // Merge andamentos no banco (acumula, não substitui)
     if (details.andamento.length > 0) {
-      await replaceAndamentos(
+      const { added, total } = await mergeAndamentos(
         details.id,
         details.andamento.map((a) => ({
           data: a.date,
-          unidade: a.unit,
+          unidade: a.unit ?? "",
           descricao: a.description,
         }))
       );
+      console.log(`[SEI Assistant] DB andamentos: +${added} novos | total ${total}`);
     }
 
-    console.log(`[SEI Assistant] DB: processo ${details.id} sincronizado (${despachos.length} despachos, ${details.andamento.length} andamentos)`);
+    console.log(`[SEI Assistant] DB: processo ${details.id} sincronizado (${despachos.length} despachos)`);
   } catch (e) {
     console.error("[SEI Assistant] DB sync error:", e);
   }
@@ -462,6 +464,25 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, _sender, sendResponse
         .catch((e) => sendResponse({ ok: false, error: String(e) }));
       return true;
     }
+  }
+});
+
+// ─── Auto-sync para IndexedDB via storage.onChanged ───────────────────────────
+// Sempre que o content script salvar novos andamentos no storage, sincroniza
+// automaticamente para o IndexedDB sem precisar que a sidebar peça.
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local") return;
+
+  for (const [key, change] of Object.entries(changes)) {
+    if (!key.startsWith("proc_")) continue;
+    const details = change.newValue as ProcessDetails | undefined;
+    if (!details?.andamento?.length) continue;
+
+    // Sync assíncrono — não bloqueia
+    syncProcessoToDB(details).catch((e) =>
+      console.error("[SEI Assistant] Auto-sync erro:", e)
+    );
   }
 });
 

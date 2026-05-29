@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { SessionInfo, SeiProcess, ProcessDetails } from "@shared/index";
+import type { SessionInfo, SeiProcess, ProcessDetails, AndamentoEntry } from "@shared/index";
 import type { AiConfig } from "../background/index";
 
 // ─── Tipos de view ──────────────────────────────────────────────────────────────
@@ -231,32 +231,59 @@ function useProcessDetails(processId: string | null) {
     if (!processId) return;
     const key = `proc_${processId}`;
 
-    // 1. Carrega do storage imediatamente
-    chrome.storage.local.get(key, (r) => {
-      const stored: ProcessDetails | undefined = r[key];
-      if (stored) setDetails(stored);
+    // Sempre busca do DB primeiro (fonte persistente) e merge com storage
+    function loadFromBoth() {
+      chrome.storage.local.get(key, (r) => {
+        const stored: ProcessDetails | undefined = r[key];
 
-      // 2. Se andamento vazio no storage, busca do DB (sessão anterior)
-      if (!stored?.andamento?.length) {
         chrome.runtime.sendMessage(
           { type: "GET_DB_ANDAMENTO", payload: { processId } },
           (res) => {
-            if (res?.ok && res.andamento?.length > 0) {
-              setDetails((prev) => prev
-                ? { ...prev, andamento: res.andamento }
-                : { id: processId, type: null, description: null, currentUnit: null,
-                    parties: [], documents: [], andamento: res.andamento,
-                    extractedAt: Date.now(), summary: null, despachosContent: null,
-                    documentLinks: {} }
-              );
+            const dbAndamento: AndamentoEntry[] = res?.ok ? (res.andamento ?? []) : [];
+            const storageAndamento: AndamentoEntry[] = stored?.andamento ?? [];
+
+            // Merge: DB + storage, dedup por data+unidade+descrição
+            const seen = new Set<string>();
+            const merged: AndamentoEntry[] = [];
+            for (const e of [...dbAndamento, ...storageAndamento]) {
+              const key2 = `${e.date}|${e.unit}|${e.description}`;
+              if (!seen.has(key2)) { seen.add(key2); merged.push(e); }
+            }
+
+            if (stored) {
+              setDetails({ ...stored, andamento: merged.length > 0 ? merged : storageAndamento });
+            } else if (merged.length > 0) {
+              setDetails({
+                id: processId, type: null, description: null, currentUnit: null,
+                parties: [], documents: [], andamento: merged,
+                extractedAt: Date.now(), summary: null, despachosContent: null,
+                documentLinks: {},
+              });
             }
           }
         );
-      }
-    });
+      });
+    }
+
+    loadFromBoth();
 
     const fn = (c: Record<string, chrome.storage.StorageChange>) => {
-      if (c[key]?.newValue) setDetails(c[key].newValue);
+      if (!c[key]?.newValue) return;
+      const stored: ProcessDetails = c[key].newValue;
+      // Re-merge com DB ao receber atualização do storage
+      chrome.runtime.sendMessage(
+        { type: "GET_DB_ANDAMENTO", payload: { processId } },
+        (res) => {
+          const dbAndamento: AndamentoEntry[] = res?.ok ? (res.andamento ?? []) : [];
+          const seen = new Set<string>();
+          const merged: AndamentoEntry[] = [];
+          for (const e of [...dbAndamento, ...(stored.andamento ?? [])]) {
+            const k2 = `${e.date}|${e.unit}|${e.description}`;
+            if (!seen.has(k2)) { seen.add(k2); merged.push(e); }
+          }
+          setDetails({ ...stored, andamento: merged.length > 0 ? merged : (stored.andamento ?? []) });
+        }
+      );
     };
     chrome.storage.onChanged.addListener(fn);
     return () => chrome.storage.onChanged.removeListener(fn);

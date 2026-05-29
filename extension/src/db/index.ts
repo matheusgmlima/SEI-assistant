@@ -149,6 +149,33 @@ export async function getAndamentosByProcesso(processoId: string): Promise<Andam
   return db.getAllFromIndex("andamentos", "by_processo", processoId);
 }
 
+/** Merge incremental: adiciona apenas entradas novas (dedup por data+unidade+descrição) */
+export async function mergeAndamentos(
+  processoId: string,
+  newEntries: Omit<AndamentoRecord, "id" | "processo_id">[]
+): Promise<{ added: number; total: number }> {
+  const db = await getDb();
+
+  const existing = await db.getAllFromIndex("andamentos", "by_processo", processoId);
+  const existingSet = new Set(
+    existing.map((e) => `${e.data}|${e.unidade}|${e.descricao}`)
+  );
+
+  const toAdd = newEntries.filter(
+    (e) => !existingSet.has(`${e.data}|${e.unidade}|${e.descricao}`)
+  );
+
+  if (toAdd.length > 0) {
+    const tx = db.transaction("andamentos", "readwrite");
+    await Promise.all(
+      toAdd.map((e) => tx.store.add({ ...e, processo_id: processoId }))
+    );
+    await tx.done;
+  }
+
+  return { added: toAdd.length, total: existing.length + toAdd.length };
+}
+
 // ─── Sync incremental ──────────────────────────────────────────────────────────
 // Retorna true se os documentos mudaram (novo despacho adicionado)
 
