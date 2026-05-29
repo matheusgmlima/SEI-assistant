@@ -423,9 +423,21 @@ function startTreePoller(processId: string) {
   }, 1000);
 }
 
+/** Encontra o link "Próxima Página" na tabela de histórico (doc atual ou iframe filho) */
+function findNextPageLink(): HTMLAnchorElement | null {
+  const SELECTOR = '#lnkInfraProximaPaginaSuperior, a[id*="ProximaPagina"], a[id*="proximaPagina"]';
+  const direct = document.querySelector<HTMLAnchorElement>(SELECTOR);
+  if (direct) return direct;
+  try {
+    return getHistoricoDoc().querySelector<HTMLAnchorElement>(SELECTOR);
+  } catch { return null; }
+}
+
 function doExtractAndSave(id: string) {
   if (!isContextValid()) return;
   const storageKey = `proc_${id}`;
+  const onHistorico = isHistoricoPage();
+
   chrome.storage.local.get(storageKey, (result) => {
     if (!isContextValid()) return;
     const existing: Partial<ProcessDetails> = result[storageKey] ?? {};
@@ -452,6 +464,24 @@ function doExtractAndSave(id: string) {
       newFirst !== existingFirst
     );
 
+    // ── Andamento: merge incremental quando na página de histórico ────────────────
+    // Cada "Próxima Página" traz novos registros — acumula em vez de substituir
+    let finalAndamento: AndamentoEntry[];
+    if (onHistorico && andamento.length > 0) {
+      const existingSet = new Set(
+        (existing.andamento ?? []).map((e) => `${e.date}|${e.unit}|${e.description}`)
+      );
+      const newEntries = andamento.filter(
+        (e) => !existingSet.has(`${e.date}|${e.unit}|${e.description}`)
+      );
+      finalAndamento = [...(existing.andamento ?? []), ...newEntries];
+      console.log(
+        `[SEI Assistant] Andamento merged: +${newEntries.length} novos | total ${finalAndamento.length}`
+      );
+    } else {
+      finalAndamento = andamento.length > 0 ? andamento : (existing.andamento ?? []);
+    }
+
     const updated: ProcessDetails = {
       id,
       type: header.type ?? existing.type ?? null,
@@ -460,7 +490,7 @@ function doExtractAndSave(id: string) {
       parties: header.parties.length > 0 ? header.parties : (existing.parties ?? []),
       documents: finalDocs,
       documentLinks: finalLinks,
-      andamento: andamento.length > 0 ? andamento : (existing.andamento ?? []),
+      andamento: finalAndamento,
       extractedAt: Date.now(),
       summary: docsChanged ? null : (existing.summary ?? null),
       despachosContent: docsChanged ? null : (existing.despachosContent ?? null),
@@ -474,6 +504,21 @@ function doExtractAndSave(id: string) {
 
     safeStorageSet({ [storageKey]: updated });
     console.log(`[SEI Assistant] Detalhes salvos para processo ${id}`, updated);
+
+    // ── Paginação automática do histórico ─────────────────────────────────────────
+    // Se há próxima página, clica automaticamente → dispara nova extração ao carregar
+    if (onHistorico && andamento.length > 0) {
+      const nextLink = findNextPageLink();
+      if (nextLink) {
+        console.log(`[SEI Assistant] Próxima página do histórico — clicando automaticamente`);
+        setTimeout(() => {
+          if (!isContextValid()) return;
+          try { nextLink.click(); } catch { /* ignora */ }
+        }, 400);
+      } else {
+        console.log(`[SEI Assistant] Histórico completo: ${finalAndamento.length} registros extraídos`);
+      }
+    }
   });
 }
 
