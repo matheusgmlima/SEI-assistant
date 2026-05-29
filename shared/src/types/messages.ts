@@ -9,7 +9,11 @@ export type MessageType =
   | "COLLECT_PROCESSES"
   | "PROCESSES_COLLECTED"
   | "SUMMARIZE_PROCESS"
-  | "OPEN_DASHBOARD";
+  | "OPEN_DASHBOARD"
+  | "EXPAND_TREE"
+  | "GET_ANDAMENTO"
+  | "GET_DB_ANDAMENTO"
+  | "CHECK_SYNC";
 
 export interface ExtMessage<T = unknown> {
   type: MessageType;

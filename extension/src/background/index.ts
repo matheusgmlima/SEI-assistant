@@ -5,7 +5,13 @@
  */
 
 import type { ExtMessage, SessionInfo, ProcessDetails } from "@shared/index";
-import JSZip from "jszip";
+import {
+  upsertProcesso,
+  upsertDespacho,
+  replaceAndamentos,
+  getAndamentosByProcesso,
+  needsSync,
+} from "../db/index";
 
 // ─── Tipos de IA ────────────────────────────────────────────────────────────────
 
@@ -16,36 +22,23 @@ export interface AiConfig {
   baseUrl: string;
 }
 
-// Presets por provider — todos usam formato OpenAI-compatible
 export const AI_PRESETS: Record<string, Omit<AiConfig, "apiKey" | "provider">> = {
-  groq: {
-    baseUrl: "https://api.groq.com/openai/v1",
-    model: "llama-3.3-70b-versatile",
-  },
-  openai: {
-    baseUrl: "https://api.openai.com/v1",
-    model: "gpt-4o-mini",
-  },
-  custom: {
-    baseUrl: "",
-    model: "",
-  },
+  groq:   { baseUrl: "https://api.groq.com/openai/v1",  model: "llama-3.3-70b-versatile" },
+  openai: { baseUrl: "https://api.openai.com/v1",       model: "gpt-4o-mini" },
+  custom: { baseUrl: "",                                 model: "" },
 };
 
 // ─── Sessão ────────────────────────────────────────────────────────────────────
 
 const DEFAULT_SESSION: SessionInfo = {
-  status: "idle",
-  username: null,
-  unit: null,
-  detectedAt: null,
+  status: "idle", username: null, unit: null, detectedAt: null,
 };
 
 async function clearSession() {
   await chrome.storage.local.set({ session: DEFAULT_SESSION });
 }
 
-// ─── IA — chamada genérica OpenAI-compatible ────────────────────────────────────
+// ─── IA ────────────────────────────────────────────────────────────────────────
 
 function buildPrompt(details: ProcessDetails): string {
   const andamentoText =
@@ -56,18 +49,12 @@ function buildPrompt(details: ProcessDetails): string {
           .join("\n")
       : "Não disponível";
 
-  // Separa despachos dos demais documentos
   const despachos = details.documents.filter((d) => /despacho/i.test(d));
   const outrosDocs = details.documents.filter((d) => !/despacho/i.test(d));
+  const outrosText = outrosDocs.length > 0 ? outrosDocs.slice(0, 15).join(", ") : "Nenhum";
 
-  const outrosText =
-    outrosDocs.length > 0
-      ? outrosDocs.slice(0, 15).join(", ")
-      : "Nenhum";
-
-  // Usa conteúdo real dos despachos se disponível; senão, apenas os títulos
   const despachosText = details.despachosContent && details.despachosContent.length > 50
-    ? details.despachosContent.slice(0, 6000) // limita tokens
+    ? details.despachosContent.slice(0, 6000)
     : despachos.length > 0
       ? despachos.join("\n")
       : "Nenhum despacho identificado";
@@ -85,13 +72,13 @@ INTERESSADOS: ${details.parties.join(", ") || "Não identificado"}
 OUTROS DOCUMENTOS (${outrosDocs.length} total):
 ${outrosText}
 
-DESPACHOS NO PROCESSO (${despachos.length} total — ${hasRealContent ? "CONTEÚDO COMPLETO" : "apenas títulos"}):
+DESPACHOS NO PROCESSO (${despachos.length} total — ${hasRealContent ? "CONTEÚDO COMPLETO" : "apenas títulos com unidade"}):
 ${despachosText}
 
 ÚLTIMOS ANDAMENTOS REGISTRADOS:
 ${andamentoText}
 
-${hasRealContent ? "Você possui o TEXTO COMPLETO dos despachos acima. Use-o para identificar o objeto, contratos, valores e decisões do processo." : "Use os nomes dos documentos e despachos como pistas sobre o objeto e tramitação do processo."}
+${hasRealContent ? "Você possui o TEXTO COMPLETO dos despachos acima. Use-o para identificar o objeto, contratos, valores e decisões do processo." : "Os títulos dos despachos incluem a unidade responsável (ex: 'Despacho 3341475 UGP - BID'). Use isso para inferir o fluxo de tramitação."}
 Responda EXATAMENTE neste formato:
 
 **Assunto**
@@ -119,8 +106,7 @@ async function callAi(config: AiConfig, prompt: string): Promise<string> {
       messages: [
         {
           role: "system",
-          content:
-            "Você é um assistente jurídico especializado em processos administrativos do TJPE. Seja objetivo, claro e profissional. Responda sempre em português.",
+          content: "Você é um assistente jurídico especializado em processos administrativos do TJPE. Seja objetivo, claro e profissional. Responda sempre em português.",
         },
         { role: "user", content: prompt },
       ],
@@ -140,7 +126,9 @@ async function callAi(config: AiConfig, prompt: string): Promise<string> {
   return content;
 }
 
-// ─── Fetch de despachos (background tem host_permission, inclui cookies) ────────
+// ─── Fetch individual de despachos ─────────────────────────────────────────────
+// O background tem host_permissions para sei.cloud.tjpe.jus.br e pode fazer
+// fetch com credentials: "include", usando os cookies de sessão do usuário.
 
 interface InfraParams {
   origin: string;
@@ -156,13 +144,13 @@ function extractDocumentId(title: string): string | null {
 }
 
 function buildDocUrl(params: InfraParams, docId: string): string {
+  // Nunca inclui infra_hash — ele é de uso único e causa logout se reutilizado
   const base = params.origin + params.pathname;
   const qs = new URLSearchParams({
     acao: "documento_visualizar",
     id_documento: docId,
     infra_sistema: params.infra_sistema,
     infra_unidade_atual: params.infra_unidade_atual,
-    ...(params.infra_hash ? { infra_hash: params.infra_hash } : {}),
   });
   return `${base}?${qs.toString()}`;
 }
@@ -185,10 +173,14 @@ async function fetchOneDoc(url: string): Promise<string> {
   if (!res.ok) return "";
   const html = await res.text();
 
-  // Tenta extrair apenas o corpo do despacho
+  // Extrai apenas o corpo do documento SEI, se disponível
   const bodyMatch = html.match(/<div[^>]+id=["']divConteudoVisualizacaoInterna["'][^>]*>([\s\S]*?)<\/div>/i);
   const raw = bodyMatch?.[1] ?? html;
-  return htmlToText(raw);
+  const text = htmlToText(raw);
+
+  // Se o resultado parece ser uma página de login/erro (sem conteúdo útil), descarta
+  if (text.length < 30 || /login|senha|acesso negado/i.test(text.slice(0, 200))) return "";
+  return text;
 }
 
 async function fetchDespachosContent(
@@ -197,12 +189,26 @@ async function fetchDespachosContent(
   fallbackParams: InfraParams | undefined
 ): Promise<string> {
   const results: string[] = [];
+  let fetched = 0;
 
   for (const title of despachoTitles) {
+    if (fetched >= 10) break; // limita a 10 despachos para não sobrecarregar
+
     try {
+      // Tenta URL direta capturada do DOM
       let url = documentLinks[title];
 
-      // Fallback: constrói URL com template salvo + ID do título
+      // Fallback: tenta pela base do título sem badge (ex: "Despacho 3341475 UGP-BID" → id 3341475)
+      if (!url) {
+        // Procura chave sem badge
+        const docId = extractDocumentId(title);
+        if (docId) {
+          const altKey = Object.keys(documentLinks).find((k) => k.includes(docId));
+          if (altKey) url = documentLinks[altKey];
+        }
+      }
+
+      // Fallback: constrói URL via template (hash de documento_visualizar recente)
       if (!url && fallbackParams) {
         const docId = extractDocumentId(title);
         if (docId) url = buildDocUrl(fallbackParams, docId);
@@ -213,84 +219,133 @@ async function fetchDespachosContent(
       const text = await fetchOneDoc(url);
       if (text.length > 20) {
         results.push(`=== ${title} ===\n${text.slice(0, 1500)}`);
+        fetched++;
+        console.log(`[SEI Assistant] Despacho "${title.slice(0, 40)}" lido (${text.length} chars)`);
       }
     } catch {
       // ignora erros individuais
     }
   }
 
+  console.log(`[SEI Assistant] Despachos lidos: ${fetched}/${despachoTitles.length}`);
   return results.join("\n\n");
 }
 
-// ─── ZIP do processo ────────────────────────────────────────────────────────────
+// ─── Sync para IndexedDB ───────────────────────────────────────────────────────
 
-interface ZipExtract {
-  despachosContent: string;
-  andamentoText: string;
+async function syncProcessoToDB(details: ProcessDetails): Promise<void> {
+  try {
+    // Determina título do último despacho para sync incremental
+    const despachos = details.documents.filter((d) => /^despacho\s+\d+/i.test(d));
+    const ultimoDocTitulo = despachos[despachos.length - 1] ?? null;
+
+    // Upsert processo
+    await upsertProcesso({
+      id: details.id,
+      tipo: details.type,
+      descricao: details.description,
+      unidade_atual: details.currentUnit,
+      partes: details.parties,
+      ultimo_doc_titulo: ultimoDocTitulo,
+      atualizado_em: Date.now(),
+    });
+
+    // Upsert cada despacho com id_doc extraído do título
+    for (const titulo of despachos) {
+      const match = titulo.match(/\b(\d{5,8})\b/);
+      if (!match) continue;
+      const id_doc = match[1];
+
+      // Tenta associar data do andamento ao despacho pelo id_doc
+      const andEntry = details.andamento.find((a) => a.description?.includes(id_doc));
+
+      await upsertDespacho({
+        id_doc,
+        processo_id: details.id,
+        titulo,
+        data: andEntry?.date ?? null,
+        setor: andEntry?.unit ?? null,
+        conteudo: null, // preenchido depois pelo fetchDespachosContent
+      });
+    }
+
+    // Salva andamentos no banco (substitui todos)
+    if (details.andamento.length > 0) {
+      await replaceAndamentos(
+        details.id,
+        details.andamento.map((a) => ({
+          data: a.date,
+          unidade: a.unit,
+          descricao: a.description,
+        }))
+      );
+    }
+
+    console.log(`[SEI Assistant] DB: processo ${details.id} sincronizado (${despachos.length} despachos, ${details.andamento.length} andamentos)`);
+  } catch (e) {
+    console.error("[SEI Assistant] DB sync error:", e);
+  }
 }
 
-async function parseZipBuffer(buffer: ArrayBuffer): Promise<ZipExtract> {
-  const zip = await JSZip.loadAsync(buffer);
+// ─── Parser de andamento a partir do HTML do histórico ────────────────────────
 
-  const despachoChunks: string[] = [];
-  let andamentoText = "";
+function parseAndamentoHtml(html: string): import("@shared/index").AndamentoEntry[] {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, "text/html");
 
-  for (const [filename, file] of Object.entries(zip.files)) {
-    if (file.dir) continue;
-    const lower = filename.toLowerCase();
-    if (!lower.endsWith(".html") && !lower.endsWith(".htm")) continue;
+  // Tenta #tblHistorico primeiro (padrão SEI/TJPE — confirmado pelo bot Selenium)
+  let table: Element | null = doc.querySelector("#tblHistorico");
 
-    const html = await file.async("string");
-    const text = htmlToText(html).slice(0, 3000);
-    if (text.length < 20) continue;
-
-    if (/despacho/i.test(filename)) {
-      despachoChunks.push(`=== ${filename} ===\n${text}`);
-    } else if (/andamento|historico/i.test(filename)) {
-      andamentoText = text;
+  if (!table) {
+    for (const t of doc.querySelectorAll("table")) {
+      const thEls   = Array.from(t.querySelectorAll("th"));
+      const firstTd = Array.from(t.querySelectorAll("tr:first-child td"));
+      const cands   = thEls.length > 0 ? thEls : firstTd;
+      const texts   = cands.map((c) => c.textContent?.toLowerCase() ?? "");
+      if (texts.some((h) => h.includes("data")) && texts.some((h) => h.includes("unidade"))) {
+        table = t; break;
+      }
     }
   }
+  if (!table) return [];
 
-  return { despachosContent: despachoChunks.join("\n\n"), andamentoText };
+  const thEls     = Array.from(table.querySelectorAll("th"));
+  const headerEls = thEls.length > 0 ? thEls : Array.from(table.querySelectorAll("tr:first-child td"));
+  const headers   = headerEls.map((el) => el.textContent?.toLowerCase().trim() ?? "");
+
+  // Colunas do TJPE: 0=Data/Hora, 1=Unidade, 2=Usuário, 3=Descrição
+  const di   = Math.max(0, headers.findIndex((h) => h.includes("data")));
+  const uIdx = headers.findIndex((h) => h.includes("unidade")) >= 0
+    ? headers.findIndex((h) => h.includes("unidade")) : 1;
+  const xIdx = headers.findIndex((h) => h.includes("descri") || h.includes("movimento"));
+  const dIdx = xIdx >= 0 ? xIdx : (headers.length >= 4 ? 3 : 1);
+
+  const entries: import("@shared/index").AndamentoEntry[] = [];
+  Array.from(table.querySelectorAll("tr")).slice(1).forEach((row) => {
+    const cells = row.querySelectorAll("td");
+    if (cells.length < 2) return;
+    const date        = cells[di]?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+    const unit        = cells[uIdx]?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+    const description = cells[dIdx]?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+    if (date || description) entries.push({ date, unit, description });
+  });
+  console.log(`[SEI Assistant] parseAndamentoHtml: ${entries.length} registros`);
+  return entries;
 }
 
-// Estratégia: busca procedimento_gerar_zip (gera ZIP fresco no servidor) e processa o binário.
-// O servidor pode retornar redirect HTTP → ZIP binário, ou HTML contendo link para exibir_arquivo.
-async function fetchZipFromGenerationUrl(genUrl: string): Promise<ZipExtract> {
-  const res = await fetch(genUrl, { credentials: "include", redirect: "follow" });
-  if (!res.ok) throw new Error(`Geração ZIP falhou: ${res.status}`);
-
-  const ct = res.headers.get("content-type") ?? "";
-
-  // Caso 1: servidor retornou binário diretamente (após redirect HTTP)
-  if (ct.includes("zip") || ct.includes("octet-stream") || ct.includes("x-zip")) {
-    return parseZipBuffer(await res.arrayBuffer());
+// Extrai URL da próxima página de paginação do histórico
+function extractNextPageUrl(html: string, baseUrl: string): string | null {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, "text/html");
+  const link = doc.querySelector<HTMLAnchorElement>("#lnkInfraProximaPaginaSuperior, #lnkInfraProximaPaginaInferior");
+  if (!link) return null;
+  const href = link.getAttribute("href") ?? "";
+  if (!href || href === "#") return null;
+  try {
+    return new URL(href, baseUrl).toString();
+  } catch {
+    return null;
   }
-
-  // Caso 2: servidor retornou HTML — extrai URL de exibir_arquivo e busca o binário
-  const html = await res.text();
-  const candidates = [
-    ...(html.match(/['"]([^'"]*exibir_arquivo[^'"]*)['"]/g) ?? []),
-    ...(html.match(/href=([^\s>]+exibir_arquivo[^\s>]*)/g) ?? []),
-  ];
-
-  for (const raw of candidates) {
-    try {
-      let urlStr = raw.replace(/^['"]|['"]$/g, "").replace(/^href=/, "").replace(/&amp;/g, "&");
-      const fileUrl = urlStr.startsWith("http") ? urlStr : new URL(urlStr, genUrl).href;
-      const fileRes = await fetch(fileUrl, { credentials: "include" });
-      if (!fileRes.ok) continue;
-      const buffer = await fileRes.arrayBuffer();
-      // Verifica assinatura ZIP (PK\x03\x04)
-      const magic = new Uint8Array(buffer, 0, 4);
-      if (magic[0] === 0x50 && magic[1] === 0x4b) {
-        console.log("[SEI Assistant] ZIP binário obtido via HTML redirect:", fileUrl.slice(0, 80));
-        return parseZipBuffer(buffer);
-      }
-    } catch { /* tenta próximo candidato */ }
-  }
-
-  throw new Error(`ZIP não encontrado. content-type: ${ct}`);
 }
 
 // ─── Listener de mensagens ──────────────────────────────────────────────────────
@@ -323,55 +378,21 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, _sender, sendResponse
         }
 
         if (!details) {
-          sendResponse({
-            ok: false,
-            error: "Dados não disponíveis. Abra o processo no SEI primeiro.",
-          });
+          sendResponse({ ok: false, error: "Dados não disponíveis. Abra o processo no SEI primeiro." });
           return;
         }
 
-        // Tenta ZIP interceptado primeiro (URL com hash correto capturada via webRequest)
-        if (!details.despachosContent) {
-          try {
-            // Busca o id_procedimento interno para localizar a URL do ZIP
-            const idStored = await chrome.storage.local.get(`procInternalId_${processId}`);
-            const internalId = idStored[`procInternalId_${processId}`] as string | undefined;
-            const zipKey = internalId ? `zipUrlById_${internalId}` : null;
-            const zipStored = zipKey ? await chrome.storage.local.get(zipKey) : {};
-            const zipUrl = zipKey ? zipStored[zipKey] as string | undefined : undefined;
-
-            if (zipUrl) {
-              console.log(`[SEI Assistant] Baixando ZIP do processo (URL interceptada)...`);
-              const { despachosContent } = await fetchAndParseZip(zipUrl);
-              if (despachosContent.length > 0) {
-                details = { ...details, despachosContent };
-                await chrome.storage.local.set({ [storageKey]: details });
-                console.log(`[SEI Assistant] ZIP processado: ${despachosContent.length} chars`);
-              }
-            } else {
-              console.log(`[SEI Assistant] ZIP não disponível ainda. Clique no ícone ZIP no SEI para ativar.`);
-              // Fallback: busca despachos individuais pelos links capturados
-              const despachoTitles = details.documents.filter((d) => /despacho/i.test(d));
-              if (despachoTitles.length > 0) {
-                const stored = await chrome.storage.local.get("docUrlTemplate");
-                const fallbackParams = stored["docUrlTemplate"] as InfraParams | undefined;
-                const docLinks = details.documentLinks ?? {};
-                const content = await fetchDespachosContent(despachoTitles, docLinks, fallbackParams);
-                if (content.length > 0) {
-                  details = { ...details, despachosContent: content };
-                  await chrome.storage.local.set({ [storageKey]: details });
-                }
-              }
-            }
-          } catch (e) {
-            console.error("[SEI Assistant] Erro ao buscar conteúdo:", e);
-          }
-        }
+        // NOTA: fetch automático de despachos foi removido — causava logout por CSRF.
+        // O conteúdo dos despachos é extraído pelo content script quando o usuário abre o doc.
 
         try {
           const summary = await callAi(config, buildPrompt(details));
           const updated: ProcessDetails = { ...details, summary };
           await chrome.storage.local.set({ [storageKey]: updated });
+
+          // Atualiza DB com conteúdo dos despachos (se disponível)
+          await syncProcessoToDB(updated);
+
           sendResponse({ ok: true, summary });
         } catch (e) {
           sendResponse({ ok: false, error: String(e) });
@@ -380,92 +401,69 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, _sender, sendResponse
 
       return true; // async
     }
+
+    case "GET_ANDAMENTO": {
+      // IMPORTANTE: NÃO fazemos fetch HTTP ao SEI — causa logout por invalidação de sessão.
+      // O content script extrai o andamento do DOM quando o usuário abre "Consultar Andamento".
+      // Este handler apenas lê o que já foi salvo no storage pelo content script.
+      const { processId } = message.payload as { processId: string };
+      const storageKey = `proc_${processId}`;
+
+      chrome.storage.local.get(storageKey, async (result) => {
+        const details = result[storageKey] as ProcessDetails | undefined;
+
+        if (!details) {
+          sendResponse({ ok: false, error: "Abra o processo no SEI primeiro." });
+          return;
+        }
+
+        if (!details.andamento || details.andamento.length === 0) {
+          sendResponse({
+            ok: false,
+            error: "Abra 'Consultar Andamento' no SEI. O assistente extrai automaticamente ao carregar a página.",
+          });
+          return;
+        }
+
+        // Sincroniza com IndexedDB e retorna
+        await syncProcessoToDB(details);
+        sendResponse({ ok: true, count: details.andamento.length });
+      });
+
+      return true; // async
+    }
+
+    // Verifica se o processo precisa re-sincronizar (último despacho mudou)
+    case "CHECK_SYNC": {
+      const { processId, ultimoDocTitulo } = message.payload as {
+        processId: string;
+        ultimoDocTitulo: string | null;
+      };
+      needsSync(processId, ultimoDocTitulo)
+        .then((needs) => sendResponse({ ok: true, needsSync: needs }))
+        .catch(() => sendResponse({ ok: true, needsSync: true }));
+      return true;
+    }
+
+    // Lê andamentos diretamente do IndexedDB (sem fetch)
+    case "GET_DB_ANDAMENTO": {
+      const { processId } = message.payload as { processId: string };
+      getAndamentosByProcesso(processId)
+        .then((rows) =>
+          sendResponse({
+            ok: true,
+            andamento: rows.map((r) => ({
+              date: r.data,
+              unit: r.unidade,
+              description: r.descricao,
+            })),
+          })
+        )
+        .catch((e) => sendResponse({ ok: false, error: String(e) }));
+      return true;
+    }
   }
 });
-
-// ─── Intercepta ZIP e baixa imediatamente ──────────────────────────────────────
-// O SEI funciona assim:
-//   1. Browser requisita procedimento_gerar_zip → servidor gera o ZIP, temp file
-//   2. Browser requisita exibir_arquivo → servidor serve o binário .zip
-// O arquivo temporário existe apenas enquanto o browser o está baixando.
-// Solução: quando exibir_arquivo é interceptado, baixar o ZIP imediatamente
-// em paralelo com o browser — antes que o arquivo seja deletado.
-
-const zipPendingByProc = new Map<string, number>(); // idProc → timestamp
-
-// Busca o número do processo (ex: "00030695-05.2025.8.17.8017") a partir do id_procedimento numérico
-async function procKeyFromInternalId(internalId: string): Promise<string | null> {
-  const all = await chrome.storage.local.get(null);
-  for (const [key, val] of Object.entries(all)) {
-    if (key.startsWith("procInternalId_") && val === internalId) {
-      return `proc_${key.replace("procInternalId_", "")}`;
-    }
-  }
-  return null;
-}
-
-async function fetchAndStoreZipImmediate(internalId: string, zipUrl: string) {
-  try {
-    const procKey = await procKeyFromInternalId(internalId);
-    if (!procKey) {
-      console.log("[SEI Assistant] Processo não mapeado para idProc:", internalId);
-      return;
-    }
-
-    console.log("[SEI Assistant] Baixando ZIP imediatamente:", zipUrl.slice(0, 100));
-    const { despachosContent } = await fetchAndParseZip(zipUrl);
-    if (despachosContent.length === 0) {
-      console.log("[SEI Assistant] ZIP sem despachos.");
-      return;
-    }
-
-    const stored = await chrome.storage.local.get(procKey);
-    const existing = stored[procKey] as ProcessDetails | undefined;
-    if (existing) {
-      await chrome.storage.local.set({ [procKey]: { ...existing, despachosContent } });
-      console.log(`[SEI Assistant] ZIP salvo em ${procKey}: ${despachosContent.length} chars`);
-    }
-  } catch (e) {
-    console.error("[SEI Assistant] Erro ao baixar ZIP imediato:", e);
-  }
-}
-
-chrome.webRequest.onBeforeRequest.addListener(
-  (details) => {
-    try {
-      const url = new URL(details.url);
-      const acao = url.searchParams.get("acao") ?? "";
-
-      // Passo 1: geração do ZIP — marca pendente
-      if (acao === "procedimento_gerar_zip" || acao === "arquivo_gerar_zip") {
-        const idProc = url.searchParams.get("id_procedimento");
-        if (!idProc) return;
-        zipPendingByProc.set(idProc, Date.now());
-        console.log("[SEI Assistant] ZIP solicitado, idProc:", idProc);
-        return;
-      }
-
-      // Passo 2: binário disponível — baixa IMEDIATAMENTE em paralelo com o browser
-      if (acao === "exibir_arquivo") {
-        const now = Date.now();
-        for (const [idProc, ts] of zipPendingByProc.entries()) {
-          if (now - ts < 15000) {
-            zipPendingByProc.delete(idProc);
-            // Não aguarda — dispara em background sem bloquear o listener
-            fetchAndStoreZipImmediate(idProc, details.url);
-            return;
-          }
-        }
-        // Limpa entradas antigas
-        for (const [idProc, ts] of zipPendingByProc.entries()) {
-          if (now - ts >= 15000) zipPendingByProc.delete(idProc);
-        }
-      }
-    } catch { /* ignore */ }
-  },
-  { urls: ["https://sei.cloud.tjpe.jus.br/*"], types: ["main_frame", "sub_frame", "xmlhttprequest"] },
-  []
-);
 
 // ─── Init ───────────────────────────────────────────────────────────────────────
 

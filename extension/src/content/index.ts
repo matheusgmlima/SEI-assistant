@@ -38,6 +38,10 @@ const DETAIL_ACTIONS = [
   "processo_visualizar",
   "procedimento_visualizar", // frame real que contém a árvore no SEI/TJPE
   "documento_visualizar",
+  // Páginas de histórico/andamento (Consultar Andamento)
+  "historico_processo_exibir",
+  "procedimento_historico",
+  "historico_exibir",
 ];
 
 // ─── Helpers ────────────────────────────────────────────────────────────────────
@@ -63,12 +67,16 @@ function extractSessionInfo(): Pick<SessionInfo, "username" | "unit"> {
   return { username, unit };
 }
 
+const isTopFrame = window === window.top;
+
 function notifySessionDetected() {
+  if (!isTopFrame) return; // sub-frames não gerenciam sessão
   const { username, unit } = extractSessionInfo();
   safeStorageSet({ session: { status: "detected", username, unit, detectedAt: Date.now() } });
 }
 
 function notifySessionEnded() {
+  if (!isTopFrame) return; // sub-frames não gerenciam sessão
   safeStorageSet({ session: { status: "idle", username: null, unit: null, detectedAt: null } });
 }
 
@@ -160,9 +168,28 @@ function getCurrentProcessId(): string | null {
 }
 
 function extractDocumentsFromTree(): { titles: string[]; links: Record<string, string> } {
-  const seen = new Set<string>();
+  const seen = new Set<string>();       // dedup por texto completo
+  const seenDocIds = new Set<string>(); // dedup por id_documento numérico
   const titles: string[] = [];
   const links: Record<string, string> = {};
+
+  function captureLink(text: string, anchor: HTMLAnchorElement | null) {
+    if (!anchor) return;
+    const href = anchor.href ?? "";
+    if (href.includes("id_documento")) {
+      links[text] = href;
+      // Registra o id_documento para evitar duplicata posterior
+      const m = href.match(/id_documento=(\d+)/);
+      if (m) seenDocIds.add(m[1]);
+    } else {
+      const onclick = anchor.getAttribute("onclick") ?? "";
+      const match = onclick.match(/controlador\.php[^'")\s]+/);
+      if (match) {
+        const raw = match[0];
+        links[text] = raw.startsWith("http") ? raw : `${window.location.origin}/sei/${raw}`;
+      }
+    }
+  }
 
   function addWithText(text: string, el: Element) {
     if (
@@ -174,55 +201,32 @@ function extractDocumentsFromTree(): { titles: string[]; links: Record<string, s
     ) {
       seen.add(text);
       titles.push(text);
-
-      // Captura URL do anchor: tenta href, depois onclick
       const anchor = (el.tagName === "A" ? el : el.querySelector("a")) as HTMLAnchorElement | null;
-      if (anchor) {
-        const href = anchor.href ?? "";
-        if (href.includes("id_documento")) {
-          links[text] = href;
-        } else {
-          const onclick = anchor.getAttribute("onclick") ?? "";
-          const match = onclick.match(/controlador\.php[^'")\s]+/);
-          if (match) {
-            const raw = match[0];
-            links[text] = raw.startsWith("http")
-              ? raw
-              : `${window.location.origin}/sei/${raw}`;
-          }
-        }
-      }
+      captureLink(text, anchor);
     }
   }
 
-  // Wrapper legado: useFullText determina textContent vs text-nodes diretos
   function add(el: Element, useFullText = false) {
     const direct = Array.from(el.childNodes)
       .filter((n) => n.nodeType === Node.TEXT_NODE)
       .map((n) => n.textContent ?? "")
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim();
+      .join(" ").replace(/\s+/g, " ").trim();
     const full = el.textContent?.replace(/\s+/g, " ").trim() ?? "";
-    const text = useFullText ? (full || direct) : (direct || full);
-    addWithText(text, el);
+    addWithText(useFullText ? (full || direct) : (direct || full), el);
   }
 
   const isTreeFrame = getActionFromUrl(window.location.href) === "arvore_visualizar" ||
     document.querySelectorAll(".infraArvoreNo").length > 0;
 
-  // Para nós da árvore: captura textContent do elemento + badge de unidade de irmãos no DOM
-  // (o SEI renderiza o badge como <span> irmão de .infraArvoreNo, fora do seu textContent)
+  // Nós da árvore: textContent + badge de unidade de elementos irmãos
   document.querySelectorAll(".infraArvoreNo").forEach((el) => {
     let text = el.textContent?.replace(/\s+/g, " ").trim() ?? "";
 
-    // Procura badge de unidade em elementos irmãos (spans curtos com texto em maiúsculas)
     const parent = el.parentElement;
     if (parent) {
       for (const sib of parent.children) {
         if (sib === el) continue;
         const sibText = sib.textContent?.replace(/\s+/g, " ").trim() ?? "";
-        // Badge: curto (< 40 chars), não vazio, ainda não incluído no texto base
         if (sibText.length > 0 && sibText.length < 40 && !text.includes(sibText)) {
           text = `${text} ${sibText}`;
           break;
@@ -233,8 +237,10 @@ function extractDocumentsFromTree(): { titles: string[]; links: Record<string, s
     addWithText(text, el);
   });
 
-  // Salta anchors que já foram processados via .infraArvoreNo (evita duplicatas sem badge)
-  document.querySelectorAll("a[href*='id_documento']").forEach((el) => {
+  // Links diretos — pula se o id_documento já foi capturado via .infraArvoreNo
+  document.querySelectorAll<HTMLAnchorElement>("a[href*='id_documento']").forEach((el) => {
+    const idMatch = el.href.match(/id_documento=(\d+)/);
+    if (idMatch && seenDocIds.has(idMatch[1])) return; // já capturado com badge
     if (el.closest(".infraArvoreNo")) return;
     add(el, false);
   });
@@ -254,21 +260,80 @@ function extractDocumentsFromTree(): { titles: string[]; links: Record<string, s
   return { titles, links };
 }
 
+function getHistoricoDoc(): Document {
+  // Estrutura SEI/TJPE: ifrConteudoVisualizacao > ifrVisualizacao > tblHistorico
+  // Tenta acessar o document filho (mesmo domínio, acesso direto permitido)
+  try {
+    const outer = document.querySelector<HTMLIFrameElement>("#ifrConteudoVisualizacao");
+    const inner = (outer?.contentDocument ?? document).querySelector<HTMLIFrameElement>("#ifrVisualizacao");
+    if (inner?.contentDocument) return inner.contentDocument;
+    if (outer?.contentDocument) return outer.contentDocument;
+  } catch { /* cross-origin bloqueado */ }
+  return document;
+}
+
 function extractAndamento(): AndamentoEntry[] {
-  const table = document.querySelector<HTMLTableElement>("#tblHistorico");
+  const searchDocs = [document, getHistoricoDoc()].filter((d, i, arr) =>
+    arr.indexOf(d) === i // dedup
+  );
+
+  let table: HTMLTableElement | null = null;
+
+  for (const doc of searchDocs) {
+    // 1. Seletor específico (padrão SEI/TJPE confirmado pelo bot Selenium)
+    table = doc.querySelector("#tblHistorico") ??
+      doc.querySelector("table[id*='historico']") ??
+      doc.querySelector("table[id*='Historico']");
+
+    // 2. Qualquer tabela cujo cabeçalho contenha "Data" + "Unidade"
+    if (!table) {
+      for (const t of doc.querySelectorAll<HTMLTableElement>("table")) {
+        const thEls   = Array.from(t.querySelectorAll("th"));
+        const firstTd = Array.from(t.querySelectorAll("tr:first-child td"));
+        const candidates = thEls.length > 0 ? thEls : firstTd;
+        const texts = candidates.map((c) => c.textContent?.toLowerCase() ?? "");
+        if (texts.some((h) => h.includes("data")) && texts.some((h) => h.includes("unidade"))) {
+          table = t; break;
+        }
+      }
+    }
+
+    if (table) break;
+  }
+
   if (!table) return [];
 
-  return Array.from(table.querySelectorAll("tr"))
-    .slice(1)
-    .map((row) => {
-      const cells = row.querySelectorAll("td");
-      return {
-        date: cells[0]?.textContent?.trim() ?? "",
-        description: cells[1]?.textContent?.trim() ?? "",
-        unit: cells[2]?.textContent?.trim() ?? "",
-      };
-    })
-    .filter((e) => e.date || e.description);
+  // Detecta colunas pelo cabeçalho (th ou primeira linha td)
+  const thEls    = Array.from(table.querySelectorAll("th"));
+  const headerEls = thEls.length > 0
+    ? thEls
+    : Array.from(table.querySelectorAll("tr:first-child td"));
+  const headers   = headerEls.map((el) => el.textContent?.replace(/\s+/g, " ").toLowerCase().trim() ?? "");
+
+  const dateIdx = headers.findIndex((h) => h.includes("data"));
+  const unitIdx = headers.findIndex((h) => h.includes("unidade") || h.includes("setor"));
+  const descIdx = headers.findIndex((h) => h.includes("descri") || h.includes("movimento") || h.includes("ocorrência"));
+
+  // Fallback: formato TJPE padrão — 0=Data/Hora, 1=Unidade, 2=Usuário, 3=Descrição
+  const di = dateIdx >= 0 ? dateIdx : 0;
+  const ui = unitIdx >= 0 ? unitIdx : 1;
+  const xi = descIdx >= 0 ? descIdx : (headers.length >= 4 ? 3 : 1);
+
+  // Pula primeira linha (sempre é cabeçalho, independente de th ou td)
+  const rows = Array.from(table.querySelectorAll("tr")).slice(1);
+
+  const result: AndamentoEntry[] = [];
+  for (const row of rows) {
+    const cells = row.querySelectorAll("td");
+    if (cells.length < 2) continue;
+    const date        = cells[di]?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+    const unit        = cells[ui]?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+    const description = cells[xi]?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+    if (date || description) result.push({ date, unit, description });
+  }
+
+  console.log(`[SEI Assistant] Andamento extraído: ${result.length} registros`);
+  return result;
 }
 
 function extractProcessHeaderInfo() {
@@ -299,10 +364,40 @@ function extractProcessHeaderInfo() {
 
 let detailDebounce: ReturnType<typeof setTimeout> | null = null;
 
-// Poll para árvore SEI carregada via AJAX — tenta até 15x com intervalo de 1s
+// Guarda processos já expandidos nesta sessão — evita loop infinito
+const autoExpandedProcesses = new Set<string>();
+
+// ─── Auto-expand pastas da árvore ─────────────────────────────────────────────
+// Clica em todos os nós colapsados (ícone "mais") para revelar os documentos
+function tryAutoExpandTree(): number {
+  let expanded = 0;
+
+  // Estratégia 1: imagens com "mais" ou "mais" na src (padrão InfraTree)
+  document.querySelectorAll<HTMLImageElement>('img[src*="mais"], img[src*="img_mais"], img[alt="+"]').forEach((img) => {
+    const a = img.closest<HTMLAnchorElement>("a");
+    if (a) { try { a.click(); expanded++; } catch { /* ignora */ } }
+  });
+
+  // Estratégia 2: links com onclick contendo "Abrir" ou "Expandir"
+  if (expanded === 0) {
+    document.querySelectorAll<HTMLAnchorElement>('a[onclick*="Abrir"], a[onclick*="abrir"], a[onclick*="expand"]').forEach((a) => {
+      // Só clica se parece nó colapsado (ainda não tem filhos visíveis)
+      const parent = a.closest("span, div");
+      const sibling = parent?.nextElementSibling;
+      const isCollapsed = !sibling || (sibling as HTMLElement).style?.display === "none";
+      if (isCollapsed) { try { a.click(); expanded++; } catch { /* ignora */ } }
+    });
+  }
+
+  if (expanded > 0) console.log(`[SEI Assistant] Auto-expandiu ${expanded} pasta(s) da árvore`);
+  return expanded;
+}
+
+// Poll para árvore SEI carregada via AJAX — só usado quando nós não existem ainda
+// Reduzido para 5 tentativas: no TJPE o frame arvore_visualizar é wrapper vazio
 let treePoller: ReturnType<typeof setInterval> | null = null;
 let treePollerAttempts = 0;
-const TREE_POLL_MAX = 15;
+const TREE_POLL_MAX = 5;
 
 function startTreePoller(processId: string) {
   if (treePoller) return; // já rodando
@@ -310,12 +405,20 @@ function startTreePoller(processId: string) {
     if (!isContextValid()) { clearInterval(treePoller!); treePoller = null; return; }
     treePollerAttempts++;
     const docs = document.querySelectorAll(".infraArvoreNo").length;
-    console.log(`[SEI Assistant] Árvore poll #${treePollerAttempts}: ${docs} nós`);
     if (docs > 0 || treePollerAttempts >= TREE_POLL_MAX) {
       clearInterval(treePoller!);
       treePoller = null;
       treePollerAttempts = 0;
-      if (docs > 0) doExtractAndSave(processId);
+      if (docs > 0) {
+        doExtractAndSave(processId);
+        if (!autoExpandedProcesses.has(processId)) {
+          autoExpandedProcesses.add(processId);
+          const expanded = tryAutoExpandTree();
+          if (expanded > 0) {
+            setTimeout(() => { if (isContextValid()) doExtractAndSave(processId); }, 2500);
+          }
+        }
+      }
     }
   }, 1000);
 }
@@ -374,21 +477,77 @@ function doExtractAndSave(id: string) {
   });
 }
 
+function isHistoricoPage(): boolean {
+  // Check definitivo: tabela #tblHistorico — no próprio doc ou em iframes filhos
+  if (document.querySelector("#tblHistorico")) return true;
+  try {
+    const doc = getHistoricoDoc();
+    if (doc !== document && doc.querySelector("#tblHistorico")) return true;
+  } catch { /* cross-origin */ }
+
+  const action = getActionFromUrl(window.location.href);
+  if (action && /historico|andamento/i.test(action)) return true;
+
+  // Título em qualquer heading ou elemento de destaque
+  const titleEls = document.querySelectorAll(
+    "h1, h2, h3, h4, caption, .infraTituloBloco, [class*='titulo'], [class*='Titulo'], b, strong"
+  );
+  for (const h of titleEls) {
+    if (/hist.rico\s+do\s+processo/i.test(h.textContent ?? "")) return true;
+  }
+  if (/hist.rico\s+do\s+processo/i.test(document.title)) return true;
+
+  // Table-based: th OU tr:first-child td com "Data" + "Unidade" + "Descri"
+  const candidates = [
+    ...Array.from(document.querySelectorAll("th")),
+    ...Array.from(document.querySelectorAll("table tr:first-child td")),
+  ];
+  const texts = candidates.map((el) => el.textContent?.replace(/\s+/g, " ").toLowerCase().trim() ?? "");
+  return texts.some((h) => h.includes("data")) &&
+    texts.some((h) => h.includes("unidade")) &&
+    texts.some((h) => h.includes("descri") || h.includes("movimento"));
+}
+
 function tryExtractAndSaveDetails() {
   const action = getActionFromUrl(window.location.href);
-  const hasAndamento = !!document.querySelector("#tblHistorico");
-  // Detecta frame da árvore pela URL OU pela presença dos nós —
-  // o SEI usa um iframe aninhado cujo URL pode não conter acao=arvore_visualizar
   const hasTreeNodes = document.querySelectorAll(".infraArvoreNo").length > 0;
   const isTreeFrame = action === "arvore_visualizar" || hasTreeNodes;
+  const isHistorico = isHistoricoPage();
+
+  console.log(`[SEI Assistant] tryExtract: action=${action} isHistorico=${isHistorico} treeNodes=${document.querySelectorAll(".infraArvoreNo").length}`);
+
+  // Quando na página de histórico, salva a URL para o background usar diretamente
+  if (isHistorico) {
+    const id = getCurrentProcessId();
+    if (id) safeStorageSet({ [`historicoUrl_${id}`]: window.location.href });
+  }
 
   // Só roda em frames relevantes
-  if (!hasAndamento && !hasTreeNodes && (!action || !DETAIL_ACTIONS.includes(action))) return;
+  if (!isHistorico && !hasTreeNodes && (!action || !DETAIL_ACTIONS.includes(action))) return;
 
   if (detailDebounce) clearTimeout(detailDebounce);
   detailDebounce = setTimeout(() => {
+    // Tenta obter o ID do processo — em frames aninhados (ifrVisualizacao) o número
+    // pode não estar no DOM; nesse caso faz lookup reverso pelo id_procedimento na URL
     const id = getCurrentProcessId();
-    if (!id) return;
+    if (!id) {
+      const internalId = new URL(window.location.href).searchParams.get("id_procedimento");
+      if (internalId && isHistorico) {
+        // Busca qual processo corresponde a este id_procedimento interno
+        chrome.storage.local.get(null, (all) => {
+          if (!isContextValid()) return;
+          const key = Object.keys(all).find(
+            (k) => k.startsWith("procInternalId_") && all[k] === internalId
+          );
+          if (key) {
+            const procId = key.replace("procInternalId_", "");
+            doExtractAndSave(procId);
+            safeStorageSet({ [`historicoUrl_${procId}`]: window.location.href });
+          }
+        });
+      }
+      return;
+    }
 
     // Frame da árvore: aguarda AJAX carregar os nós antes de extrair
     if (isTreeFrame) {
@@ -402,7 +561,7 @@ function tryExtractAndSaveDetails() {
       return;
     }
 
-    // Outros frames: extrai andamento e metadados do header
+    // Página de histórico/andamento: extrai e salva
     doExtractAndSave(id);
   }, 600);
 }
@@ -420,6 +579,20 @@ if (isContextValid()) {
       } else {
         sendResponse({ ok: false, onPage: false });
       }
+      return true;
+    }
+
+    if (message.type === "EXPAND_TREE") {
+      const expanded = tryAutoExpandTree();
+      if (expanded > 0) {
+        // Re-extrai após AJAX carregar os sub-itens
+        setTimeout(() => {
+          if (!isContextValid()) return;
+          const id = getCurrentProcessId();
+          if (id) doExtractAndSave(id);
+        }, 2500);
+      }
+      sendResponse({ ok: true, expanded });
       return true;
     }
 

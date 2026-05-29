@@ -6,14 +6,21 @@ import type { AiConfig } from "../background/index";
 type View = "main" | "processes" | "processDetail" | "settings";
 type DetailTab = "resumo" | "tramitacao";
 
-// ─── Utilitários de tramitação ──────────────────────────────────────────────────
+// ─── Tramitação — tipos e lógica ────────────────────────────────────────────────
+
+interface DespachoItem {
+  title: string;
+  date: string | null;   // data extraída do conteúdo ou andamento
+  docId: string | null;
+}
 
 interface UnitPhase {
   unit: string;
   enteredAt: string | null;
   leftAt: string | null;
   durationDays: number | null;
-  despachos: string[];
+  despachos: DespachoItem[];
+  isCurrent: boolean;
 }
 
 function parseDate(s: string): Date | null {
@@ -22,78 +29,129 @@ function parseDate(s: string): Date | null {
   return new Date(`${m[3]}-${m[2]}-${m[1]}`);
 }
 
+function fmtDate(s: string | null): string {
+  if (!s) return "";
+  // "dd/mm/yyyy hh:mm" → "dd/mm/yy"
+  const m = s.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+  return m ? `${m[1]}/${m[2]}/${m[3].slice(2)}` : s;
+}
+
+/** Extrai data de um bloco de conteúdo de despacho (se disponível). */
+function extractDateFromContent(title: string, despachosContent: string | null): string | null {
+  if (!despachosContent) return null;
+  const escapedTitle = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const sectionMatch = despachosContent.match(
+    new RegExp(`===\\s*${escapedTitle}\\s*===([\\s\\S]{0,800})`, "i")
+  );
+  if (!sectionMatch) return null;
+  const dateMatch = sectionMatch[1].match(/(\d{2}\/\d{2}\/\d{4})/);
+  return dateMatch?.[1] ?? null;
+}
+
+/** Extrai unidade do título de despacho com badge: "Despacho 3341475 UGP - BID" → "UGP - BID" */
+function unitFromDespacho(title: string): string {
+  const m = title.match(/despacho\s+\d+\s+(.*)/i);
+  return m?.[1]?.trim() ?? "";
+}
+
+/** Normaliza nome de unidade para matching fuzzy (remove códigos numéricos longos) */
+function normalizeUnit(u: string): string {
+  return u.toLowerCase()
+    .replace(/[-\s]+\d{7,}/g, "")  // remove códigos "1200001000" etc.
+    .replace(/\s+/g, " ").trim();
+}
+
+function unitsMatch(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  const na = normalizeUnit(a);
+  const nb = normalizeUnit(b);
+  if (na === nb) return true;
+  // match parcial: um contém o outro (mínimo 5 chars para evitar falso positivo)
+  if (na.length >= 5 && nb.length >= 5) {
+    return na.includes(nb) || nb.includes(na);
+  }
+  return false;
+}
+
 function buildTramitacao(details: ProcessDetails): UnitPhase[] {
-  // Extrai unidade do título do despacho: "Despacho 3341475 UGP - BID" → "UGP - BID"
-  function unitFromDespacho(title: string): string {
-    const m = title.match(/despacho\s+\d+\s+(.*)/i);
-    return m?.[1]?.trim() ?? "";
+  const despachoTitles = details.documents.filter((d) => /^despacho\s+\d+/i.test(d));
+
+  // Lista de despachos com sua unidade badge
+  const allDespachos: DespachoItem[] = despachoTitles.map((title) => ({
+    title,
+    date: extractDateFromContent(title, details.despachosContent ?? null),
+    docId: title.match(/\b(\d{5,8})\b/)?.[1] ?? null,
+    unit: unitFromDespacho(title),
+  } as DespachoItem & { unit: string }));
+
+  // Mapa unidade normalizada → despachos
+  const byUnit: Map<string, DespachoItem[]> = new Map();
+  for (const d of allDespachos) {
+    const unit = (d as DespachoItem & { unit: string }).unit || "—";
+    if (!byUnit.has(unit)) byUnit.set(unit, []);
+    byUnit.get(unit)!.push(d);
   }
 
-  // Agrupa despachos por unidade
-  const byUnit: Record<string, string[]> = {};
-  for (const doc of details.documents) {
-    if (/despacho/i.test(doc)) {
-      const u = unitFromDespacho(doc) || "—";
-      (byUnit[u] = byUnit[u] ?? []).push(doc);
-    }
-  }
+  // ── Com andamento: fases com datas de entrada/saída por unidade ──────────────
+  if (details.andamento.length > 0) {
+    // Ordena andamento cronologicamente (mais antigo → mais recente)
+    const sorted = [...details.andamento]
+      .filter((e) => e.unit && e.date)
+      .sort((a, b) => {
+        const da = parseDate(a.date), db = parseDate(b.date);
+        return (da?.getTime() ?? 0) - (db?.getTime() ?? 0);
+      });
 
-  if (details.andamento.length === 0) {
-    // Sem andamento: lista unidades dos despachos em ordem de aparição
-    // Filtra a entrada "—" que ocorre quando não há badge de unidade
-    return Object.entries(byUnit)
-      .filter(([unit]) => unit !== "—")
-      .map(([unit, despachos]) => ({
-        unit,
-        enteredAt: null,
-        leftAt: null,
-        durationDays: null,
-        despachos,
-      }));
-  }
+    // Reconstrói fases: cada vez que a unidade muda, abre nova fase
+    const phases: UnitPhase[] = [];
+    let current: UnitPhase | null = null;
 
-  // Com andamento: reconstrói fases por unidade
-  const phaseMap: Record<string, { entered: string; left: string | null }> = {};
-  const order: string[] = [];
+    for (const e of sorted) {
+      const u = e.unit!.trim();
+      if (!current || current.unit !== u) {
+        if (current) current.leftAt = e.date;
+        // Fuzzy match: encontra despachos cuja unidade badge bate com a unidade do andamento
+        const matchedDespachos: DespachoItem[] = [];
+        byUnit.forEach((desps, dUnit) => {
+          if (unitsMatch(u, dUnit)) matchedDespachos.push(...desps);
+        });
 
-  for (const e of [...details.andamento].reverse()) {
-    const u = e.unit?.trim();
-    if (!u) continue;
-    if (!phaseMap[u]) {
-      phaseMap[u] = { entered: e.date, left: null };
-      order.push(u);
-    } else {
-      // atualiza a data mais recente como "left"
-      const entered = parseDate(phaseMap[u].entered);
-      const cur = parseDate(e.date);
-      if (cur && entered && cur > entered) {
-        phaseMap[u].left = e.date;
+        current = {
+          unit: u,
+          enteredAt: e.date,
+          leftAt: null,
+          durationDays: null,
+          despachos: matchedDespachos,
+          isCurrent: false,
+        };
+        phases.push(current);
       }
     }
-  }
 
-  return order.map((unit) => {
-    const { entered, left } = phaseMap[unit];
-    let durationDays: number | null = null;
-    if (entered && left) {
-      const a = parseDate(entered), b = parseDate(left);
-      if (a && b) durationDays = Math.round(Math.abs(b.getTime() - a.getTime()) / 86400000);
+    // Calcula durações e marca fase atual
+    for (let i = 0; i < phases.length; i++) {
+      const p = phases[i];
+      p.isCurrent = i === phases.length - 1;
+      if (p.enteredAt && p.leftAt) {
+        const a = parseDate(p.enteredAt), b = parseDate(p.leftAt);
+        if (a && b) p.durationDays = Math.round(Math.abs(b.getTime() - a.getTime()) / 86400000);
+      } else if (p.isCurrent && p.enteredAt) {
+        const a = parseDate(p.enteredAt);
+        if (a) p.durationDays = Math.round((Date.now() - a.getTime()) / 86400000);
+      }
     }
 
-    // Match fuzzy de unidade: compara primeiras 6 letras
-    const key6 = unit.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
-    const matchedKey = Object.keys(byUnit).find((k) =>
-      k.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6) === key6
-    );
+    return phases;
+  }
 
-    return {
-      unit,
-      enteredAt: entered,
-      leftAt: left,
-      durationDays,
-      despachos: matchedKey ? byUnit[matchedKey] : [],
-    };
-  });
+  // ── Sem andamento: usa apenas títulos com badge ───────────────────────────────
+  const result: UnitPhase[] = [];
+  for (const [unit, despachos] of byUnit.entries()) {
+    if (unit === "—") continue;
+    result.push({ unit, enteredAt: null, leftAt: null, durationDays: null, despachos, isCurrent: false });
+  }
+  if (result.length > 0) result[result.length - 1].isCurrent = true;
+  return result;
 }
 
 // ─── AI Presets ─────────────────────────────────────────────────────────────────
@@ -172,7 +230,31 @@ function useProcessDetails(processId: string | null) {
   useEffect(() => {
     if (!processId) return;
     const key = `proc_${processId}`;
-    chrome.storage.local.get(key, (r) => { if (r[key]) setDetails(r[key]); });
+
+    // 1. Carrega do storage imediatamente
+    chrome.storage.local.get(key, (r) => {
+      const stored: ProcessDetails | undefined = r[key];
+      if (stored) setDetails(stored);
+
+      // 2. Se andamento vazio no storage, busca do DB (sessão anterior)
+      if (!stored?.andamento?.length) {
+        chrome.runtime.sendMessage(
+          { type: "GET_DB_ANDAMENTO", payload: { processId } },
+          (res) => {
+            if (res?.ok && res.andamento?.length > 0) {
+              setDetails((prev) => prev
+                ? { ...prev, andamento: res.andamento }
+                : { id: processId, type: null, description: null, currentUnit: null,
+                    parties: [], documents: [], andamento: res.andamento,
+                    extractedAt: Date.now(), summary: null, despachosContent: null,
+                    documentLinks: {} }
+              );
+            }
+          }
+        );
+      }
+    });
+
     const fn = (c: Record<string, chrome.storage.StorageChange>) => {
       if (c[key]?.newValue) setDetails(c[key].newValue);
     };
@@ -307,55 +389,104 @@ function SettingsScreen({ onBack }: { onBack: () => void }) {
   );
 }
 
-// ── Componente: Timeline de Tramitação ──────────────────────────────────────────
+// ── Componente: Árvore de Tramitação ────────────────────────────────────────────
 function TramitacaoTimeline({ details }: { details: ProcessDetails }) {
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
   const phases = buildTramitacao(details);
+  const hasAndamento = details.andamento.length > 0;
 
   if (phases.length === 0) {
     return (
       <div className="tram-empty">
-        <p>Dados insuficientes.</p>
-        <p className="tram-hint">Clique em <strong>Consultar Andamento</strong> no SEI e reabra o processo.</p>
+        <p>Nenhum despacho com unidade identificada.</p>
+        <p className="tram-hint">
+          Para ver datas completas, clique em <strong>Consultar Andamento</strong> no SEI.
+        </p>
       </div>
     );
   }
 
+  const totalDays = phases.reduce((acc, p) => acc + (p.durationDays ?? 0), 0);
+
   return (
-    <div className="tram-list">
-      {phases.map((phase, i) => (
-        <div key={i} className="tram-phase">
-          <div className="tram-connector">
-            <div className={`tram-dot ${i === phases.length - 1 ? "tram-dot--last" : ""}`} />
-            {i < phases.length - 1 && <div className="tram-line" />}
-          </div>
-          <div className="tram-content">
-            <p className="tram-unit">{phase.unit}</p>
-            <div className="tram-meta">
-              {phase.enteredAt && <span className="tram-date">Entrada: {phase.enteredAt}</span>}
-              {phase.leftAt   && <span className="tram-date">Saída: {phase.leftAt}</span>}
-              {phase.durationDays !== null && (
-                <span className="tram-duration">{phase.durationDays}d</span>
+    <div className="tram-tree">
+      {!hasAndamento && (
+        <div className="tram-notice">
+          Sem datas — abra o processo no SEI e clique em <strong>Consultar Andamento</strong>. O assistente extrai automaticamente.
+        </div>
+      )}
+
+      {phases.map((phase, i) => {
+        const isOpen = expanded[i];
+        const pct = totalDays > 0 && phase.durationDays !== null
+          ? Math.round((phase.durationDays / totalDays) * 100)
+          : null;
+
+        return (
+          <div key={i} className={`tram-node ${phase.isCurrent ? "tram-node--current" : ""}`}>
+            {/* Linha vertical conectora */}
+            <div className="tram-spine">
+              <div className={`tram-bullet ${phase.isCurrent ? "tram-bullet--active" : ""}`} />
+              {i < phases.length - 1 && <div className="tram-spine-line" />}
+            </div>
+
+            <div className="tram-body">
+              {/* Cabeçalho da unidade */}
+              <div className="tram-header" onClick={() => setExpanded((p) => ({ ...p, [i]: !isOpen }))}>
+                <span className="tram-unit-name">{phase.unit}</span>
+                <div className="tram-header-right">
+                  {phase.durationDays !== null && (
+                    <span className={`tram-badge ${phase.isCurrent ? "tram-badge--active" : ""}`}>
+                      {phase.isCurrent ? `${phase.durationDays}d ●` : `${phase.durationDays}d`}
+                    </span>
+                  )}
+                  {phase.despachos.length > 0 && (
+                    <span className="tram-chevron">{isOpen ? "▾" : "▸"}</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Datas */}
+              {(phase.enteredAt || phase.leftAt) && (
+                <div className="tram-dates">
+                  {phase.enteredAt && <span>↓ {fmtDate(phase.enteredAt)}</span>}
+                  {phase.leftAt    && <span>↑ {fmtDate(phase.leftAt)}</span>}
+                  {pct !== null    && <span className="tram-pct">{pct}% do tempo</span>}
+                </div>
+              )}
+
+              {/* Barra de proporção (quando há andamento) */}
+              {hasAndamento && pct !== null && (
+                <div className="tram-bar-track">
+                  <div
+                    className={`tram-bar-fill ${phase.isCurrent ? "tram-bar-fill--active" : ""}`}
+                    style={{ width: `${Math.max(pct, 2)}%` }}
+                  />
+                </div>
+              )}
+
+              {/* Lista de despachos — sempre visível se houver */}
+              {phase.despachos.length > 0 && (
+                <ul className="tram-despachos">
+                  {phase.despachos.map((d, j) => (
+                    <li key={j} className="tram-despacho-item">
+                      <span className="tram-despacho-id">#{d.docId ?? "—"}</span>
+                      <span className="tram-despacho-title">
+                        {d.title.replace(/despacho\s+\d+\s*/i, "").trim() || d.title}
+                      </span>
+                      {d.date && <span className="tram-despacho-date">{fmtDate(d.date)}</span>}
+                    </li>
+                  ))}
+                </ul>
               )}
             </div>
-            {phase.despachos.length > 0 && (
-              <button
-                className="tram-toggle"
-                onClick={() => setExpanded((prev) => ({ ...prev, [i]: !prev[i] }))}
-              >
-                {expanded[i] ? "▾" : "▸"} {phase.despachos.length} despacho{phase.despachos.length > 1 ? "s" : ""}
-              </button>
-            )}
-            {expanded[i] && (
-              <ul className="tram-despachos">
-                {phase.despachos.map((d, j) => (
-                  <li key={j} className="tram-despacho-item">{d}</li>
-                ))}
-              </ul>
-            )}
           </div>
-        </div>
-      ))}
+        );
+      })}
+
+      {hasAndamento && totalDays > 0 && (
+        <div className="tram-total">Total: {totalDays} dias no processo</div>
+      )}
     </div>
   );
 }
@@ -375,12 +506,56 @@ function ProcessDetailScreen({
   const hasApiKey = !!config?.apiKey;
   const summaryRef = useRef<HTMLDivElement>(null);
   const [tab, setTab] = useState<DetailTab>("resumo");
+  const [expanding, setExpanding] = useState(false);
+  const [generatingTram, setGeneratingTram] = useState(false);
+  const [tramError, setTramError] = useState<string | null>(null);
+  const [waitingForSei, setWaitingForSei] = useState(false);
+
+  // Quando andamento chega via storage.onChanged enquanto aguardando, limpa o loading
+  useEffect(() => {
+    if (waitingForSei && (details?.andamento?.length ?? 0) > 0) {
+      setGeneratingTram(false);
+      setWaitingForSei(false);
+      setTramError(null);
+    }
+  }, [details?.andamento?.length, waitingForSei]);
+
+  function generateTramitacao() {
+    setGeneratingTram(true); setTramError(null); setWaitingForSei(false);
+    chrome.runtime.sendMessage(
+      { type: "GET_ANDAMENTO", payload: { processId } },
+      (res) => {
+        if (res?.ok) {
+          // Andamento já estava no storage — loading pode parar
+          setGeneratingTram(false);
+          setWaitingForSei(false);
+        } else {
+          // Sem andamento: mantém loading e avisa para abrir o SEI
+          setWaitingForSei(true);
+          setTramError(res?.error ?? "Não foi possível buscar o histórico.");
+        }
+      }
+    );
+  }
 
   useEffect(() => {
     if (details?.summary && summaryRef.current) {
       summaryRef.current.scrollIntoView({ behavior: "smooth" });
     }
   }, [details?.summary]);
+
+  function expandTree() {
+    setExpanding(true);
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tabId = tabs[0]?.id;
+      if (!tabId) { setExpanding(false); return; }
+      // Sem frameId → todos os frames recebem (all_frames: true no content script)
+      chrome.tabs.sendMessage(tabId, { type: "EXPAND_TREE" }, () => {
+        if (chrome.runtime.lastError) { /* ignora se nenhum frame responder */ }
+        setTimeout(() => setExpanding(false), 3000);
+      });
+    });
+  }
 
   const timeAgo = details?.extractedAt
     ? (() => {
@@ -396,6 +571,15 @@ function ProcessDetailScreen({
       <header className="screen-header">
         <button className="btn-back" onClick={onBack}>‹</button>
         <span className="screen-title" title={processId}>{processId}</span>
+        <button
+          className="btn-refresh"
+          title="Expandir todas as pastas da árvore"
+          onClick={expandTree}
+          disabled={expanding}
+          style={{ fontSize: "12px" }}
+        >
+          {expanding ? "⏳" : "📂"}
+        </button>
       </header>
 
       {!details && (
@@ -424,7 +608,32 @@ function ProcessDetailScreen({
           </div>
 
           {/* Aba: Tramitação */}
-          {tab === "tramitacao" && <TramitacaoTimeline details={details} />}
+          {tab === "tramitacao" && (
+            <>
+              <div style={{ display: "flex", gap: "6px", margin: "6px 0" }}>
+                <button
+                  className="btn-summarize"
+                  style={{ flex: 1, fontSize: "11px", padding: "6px" }}
+                  onClick={generateTramitacao}
+                  disabled={generatingTram}
+                >
+                  {generatingTram ? "⏳ Aguardando SEI…" : "🤖 Gerar Tramitação"}
+                </button>
+              </div>
+              {waitingForSei && (
+                <div className="summary-loading" style={{ margin: "0 0 6px", display: "flex", alignItems: "center", gap: "6px" }}>
+                  <span className="tram-spinner" />
+                  <span>Abra <strong>Consultar Andamento</strong> no SEI. O assistente vai extrair automaticamente.</span>
+                </div>
+              )}
+              {tramError && !waitingForSei && (
+                <div className="summary-error" style={{ margin: "0 0 6px" }}>
+                  <p>{tramError}</p>
+                </div>
+              )}
+              <TramitacaoTimeline details={details} />
+            </>
+          )}
 
           {/* Aba: Resumo — conteúdo original */}
           {tab === "resumo" && <>
@@ -453,8 +662,8 @@ function ProcessDetailScreen({
 
           {/* Documentos — Despachos */}
           {details.documents.length > 0 && (() => {
-            const despachos = details.documents.filter(d => /despacho/i.test(d));
-            const outros = details.documents.filter(d => !/despacho/i.test(d));
+            const despachos = details.documents.filter(d => /^despacho\s+\d+/i.test(d));
+            const outros = details.documents.filter(d => !/^despacho\s+\d+/i.test(d));
             return (
               <>
                 {despachos.length > 0 && (
