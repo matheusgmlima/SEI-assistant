@@ -10,9 +10,12 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       input: {
+        // NOTA: o content script tem build próprio (vite.content.config.ts) em
+        // formato IIFE, pois content scripts MV3 não suportam `import`.
         background: resolve(__dirname, "src/background/index.ts"),
-        content: resolve(__dirname, "src/content/index.ts"),
         sidebar: resolve(__dirname, "sidebar.html"),
+        report: resolve(__dirname, "report.html"),
+        dashboard: resolve(__dirname, "dashboard.html"),
       },
       output: {
         entryFileNames: "[name]/index.js",

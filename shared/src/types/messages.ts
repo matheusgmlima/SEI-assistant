@@ -16,7 +16,22 @@ export type MessageType =
   | "CHECK_SYNC"
   | "START_COLLECTION"
   | "STOP_COLLECTION"
-  | "COLLECTION_DONE";
+  | "COLLECTION_DONE"
+  | "AUDIT_PROCESS"
+  | "ASK_PROCESS"
+  | "START_QUEUE"
+  | "STOP_QUEUE";
+
+/** Estado da fila de coleta em lote (persistido em storage `collectionQueue`). */
+export interface CollectionQueueState {
+  current: string | null;  // processo sendo coletado agora
+  remaining: string[];     // ainda na fila
+  done: string[];          // coletados com sucesso
+  failed: string[];        // falharam
+  total: number;           // total inicial
+  status: "running" | "done";
+  startedAt: number;
+}
 
 export interface CollectionStatus {
   processId: string;

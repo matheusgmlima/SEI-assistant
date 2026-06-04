@@ -1,10 +1,14 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { SessionInfo, SeiProcess, ProcessDetails, AndamentoEntry } from "@shared/index";
+import { useEffect, useRef, useState, useMemo, type ReactNode } from "react";
+import type {
+  SessionInfo, SeiProcess, ProcessDetails, AndamentoEntry,
+  AuditResult, AuditFinding, AuditSeverity, ProcessStatusInfo, CollectionQueueState,
+} from "@shared/index";
+import { deriveStatus, extractImportantDocs, cleanDocTitle } from "@shared/index";
 import type { AiConfig } from "../background/index";
 
 // ─── Tipos de view ──────────────────────────────────────────────────────────────
 type View = "main" | "processes" | "processDetail" | "settings";
-type DetailTab = "resumo" | "tramitacao";
+type DetailTab = "resumo" | "tramitacao" | "auditoria" | "perguntar";
 
 // ─── Tramitação — tipos e lógica ────────────────────────────────────────────────
 
@@ -335,6 +339,94 @@ function useProcesses() {
   return { processes, collectedAt, loading, notOnPage, collect };
 }
 
+// ─── Hook: portfólio (lista enriquecida com auditoria + status) ─────────────────
+export interface PortfolioItem extends SeiProcess {
+  audit: AuditResult | null;
+  collected: boolean;
+  statusInfo: ProcessStatusInfo | null;
+}
+
+function usePortfolio() {
+  const { processes, collectedAt, loading, notOnPage, collect } = useProcesses();
+  const [detailsMap, setDetailsMap] = useState<Record<string, ProcessDetails>>({});
+
+  useEffect(() => {
+    function readAll() {
+      chrome.storage.local.get(null, (all) => {
+        const map: Record<string, ProcessDetails> = {};
+        for (const k of Object.keys(all)) {
+          if (k.startsWith("proc_")) map[k.slice(5)] = all[k] as ProcessDetails;
+        }
+        setDetailsMap(map);
+      });
+    }
+    readAll();
+    const fn = (c: Record<string, chrome.storage.StorageChange>) => {
+      if (Object.keys(c).some((k) => k.startsWith("proc_"))) readAll();
+    };
+    chrome.storage.onChanged.addListener(fn);
+    return () => chrome.storage.onChanged.removeListener(fn);
+  }, []);
+
+  const items: PortfolioItem[] = useMemo(
+    () =>
+      processes.map((p) => {
+        const d = detailsMap[p.id];
+        return {
+          ...p,
+          audit: d?.audit ?? null,
+          collected: !!d,
+          statusInfo: d ? deriveStatus(d) : null,
+        };
+      }),
+    [processes, detailsMap]
+  );
+
+  return { items, collectedAt, loading, notOnPage, collect };
+}
+
+// ─── Hook: fila de coleta em lote ────────────────────────────────────────────────
+function useQueue() {
+  const [queue, setQueue] = useState<CollectionQueueState | null>(null);
+
+  useEffect(() => {
+    chrome.storage.local.get("collectionQueue", (r) => setQueue((r.collectionQueue as CollectionQueueState) ?? null));
+    const fn = (c: Record<string, chrome.storage.StorageChange>) => {
+      if ("collectionQueue" in c) setQueue((c.collectionQueue.newValue as CollectionQueueState) ?? null);
+    };
+    chrome.storage.onChanged.addListener(fn);
+    return () => chrome.storage.onChanged.removeListener(fn);
+  }, []);
+
+  function start(ids: string[]): Promise<boolean> {
+    return new Promise((resolve) => {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const tabId = tabs[0]?.id;
+        if (!tabId) { resolve(false); return; }
+        chrome.tabs.sendMessage(tabId, { type: "START_QUEUE", payload: { processIds: ids } }, (res) => {
+          resolve(!chrome.runtime.lastError && !!res?.ok);
+        });
+      });
+    });
+  }
+
+  function stop() {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tabId = tabs[0]?.id;
+      if (tabId) chrome.tabs.sendMessage(tabId, { type: "STOP_QUEUE" }, () => { if (chrome.runtime.lastError) { /* ok */ } });
+    });
+    chrome.storage.local.remove("collectionQueue");
+    setQueue(null);
+  }
+
+  function dismiss() {
+    chrome.storage.local.remove("collectionQueue");
+    setQueue(null);
+  }
+
+  return { queue, start, stop, dismiss };
+}
+
 // ─── Hook: detalhes de processo ─────────────────────────────────────────────────
 function useProcessDetails(processId: string | null) {
   const [details, setDetails] = useState<ProcessDetails | null>(null);
@@ -417,6 +509,77 @@ function useProcessDetails(processId: string | null) {
   }
 
   return { details, summarizing, summaryError, generateSummary };
+}
+
+// ─── Hook: auditoria ─────────────────────────────────────────────────────────────
+function useAudit(processId: string | null, details: ProcessDetails | null) {
+  const [auditing, setAuditing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const audit = details?.audit ?? null;
+
+  function runAudit() {
+    if (!processId) return;
+    setAuditing(true); setError(null);
+    chrome.runtime.sendMessage(
+      { type: "AUDIT_PROCESS", payload: { processId } },
+      (res) => {
+        setAuditing(false);
+        if (!res?.ok) setError(res?.error ?? "Erro ao gerar auditoria.");
+        // O resultado chega via storage.onChanged → useProcessDetails atualiza `details.audit`
+      }
+    );
+  }
+
+  return { audit, auditing, error, runAudit };
+}
+
+// ─── Hook: Q&A (pergunte ao processo) ────────────────────────────────────────────
+interface QaMessage { role: "user" | "assistant"; content: string; ts: number; }
+
+function useQa(processId: string | null) {
+  const [messages, setMessages] = useState<QaMessage[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Carrega histórico persistido
+  useEffect(() => {
+    if (!processId) { setMessages([]); return; }
+    const key = `qa_${processId}`;
+    chrome.storage.local.get(key, (r) => setMessages((r[key] as QaMessage[]) ?? []));
+  }, [processId]);
+
+  function persist(msgs: QaMessage[]) {
+    setMessages(msgs);
+    if (processId) chrome.storage.local.set({ [`qa_${processId}`]: msgs });
+  }
+
+  function ask(question: string) {
+    const q = question.trim();
+    if (!processId || !q || loading) return;
+
+    const withUser = [...messages, { role: "user" as const, content: q, ts: Date.now() }];
+    persist(withUser);
+    setLoading(true); setError(null);
+
+    // Envia histórico anterior (sem timestamps) para follow-up coerente
+    const history = messages.map((m) => ({ role: m.role, content: m.content }));
+
+    chrome.runtime.sendMessage(
+      { type: "ASK_PROCESS", payload: { processId, question: q, history } },
+      (res) => {
+        setLoading(false);
+        if (res?.ok) {
+          persist([...withUser, { role: "assistant", content: res.answer, ts: Date.now() }]);
+        } else {
+          setError(res?.error ?? "Erro ao consultar a IA.");
+        }
+      }
+    );
+  }
+
+  function clear() { persist([]); }
+
+  return { messages, loading, error, ask, clear };
 }
 
 // ─── Hook: config de IA ─────────────────────────────────────────────────────────
@@ -700,6 +863,283 @@ function TramitacaoTimeline({ details }: { details: ProcessDetails }) {
   );
 }
 
+// ── Componente: Painel de Auditoria ─────────────────────────────────────────────
+
+const SEVERITY_META: Record<AuditSeverity, { label: string; cls: string; icon: string }> = {
+  critico: { label: "Crítico", cls: "sev--critico", icon: "⛔" },
+  alto:    { label: "Alto",    cls: "sev--alto",    icon: "⚠️" },
+  medio:   { label: "Médio",   cls: "sev--medio",   icon: "△" },
+  baixo:   { label: "Baixo",   cls: "sev--baixo",   icon: "ℹ️" },
+  ok:      { label: "OK",      cls: "sev--ok",      icon: "✓" },
+};
+
+const RISK_META: Record<AuditSeverity, { label: string; cls: string }> = {
+  critico: { label: "Risco Crítico", cls: "risk--critico" },
+  alto:    { label: "Risco Alto",    cls: "risk--alto" },
+  medio:   { label: "Risco Médio",   cls: "risk--medio" },
+  baixo:   { label: "Conforme",      cls: "risk--baixo" },
+  ok:      { label: "Conforme",      cls: "risk--baixo" },
+};
+
+const CATEGORY_LABEL: Record<string, string> = {
+  documental: "Documental",
+  temporal: "Prazos",
+  processual: "Sequência",
+  financeiro: "Financeiro",
+  conformidade: "Conformidade",
+};
+
+function AuditPanel({
+  audit,
+  auditing,
+  error,
+  onRun,
+  hasData,
+  hasApiKey,
+}: {
+  audit: AuditResult | null;
+  auditing: boolean;
+  error: string | null;
+  onRun: () => void;
+  hasData: boolean;
+  hasApiKey: boolean;
+}) {
+  if (auditing) {
+    return (
+      <div className="audit-loading">
+        <span className="collect-spinner" />
+        <span>Analisando conformidade do processo…</span>
+      </div>
+    );
+  }
+
+  if (!audit) {
+    return (
+      <div className="audit-empty">
+        <p className="audit-empty-title">Auditoria de conformidade</p>
+        <p className="audit-empty-desc">
+          Verifica documentos obrigatórios, prazos, sequência dos atos e aponta riscos com recomendações.
+        </p>
+        {!hasData && (
+          <p className="audit-empty-hint">Colete os dados do processo primeiro para uma análise completa.</p>
+        )}
+        {!hasApiKey && (
+          <p className="audit-empty-hint">Sem chave de IA: a auditoria roda só com as verificações automáticas (checklist + regras).</p>
+        )}
+        {error && <div className="summary-error summary-error--inline"><p>{error}</p></div>}
+        <button className="btn-summarize" onClick={onRun}>🛡️ Auditar processo</button>
+      </div>
+    );
+  }
+
+  const risk = RISK_META[audit.riskLevel];
+  const presentes = audit.checklist.filter((c) => c.status === "presente").length;
+  const totalCheck = audit.checklist.length;
+
+  // Agrupa findings por severidade na ordem de gravidade
+  const order: AuditSeverity[] = ["critico", "alto", "medio", "baixo"];
+  const sortedFindings = [...audit.findings].sort(
+    (a, b) => order.indexOf(a.severity) - order.indexOf(b.severity)
+  );
+
+  const genAt = new Date(audit.generatedAt);
+  const genStr = `${String(genAt.getDate()).padStart(2, "0")}/${String(genAt.getMonth() + 1).padStart(2, "0")} ${String(genAt.getHours()).padStart(2, "0")}:${String(genAt.getMinutes()).padStart(2, "0")}`;
+
+  return (
+    <div className="audit-panel">
+      {/* Cabeçalho: score + risco */}
+      <div className={`audit-scorecard ${risk.cls}`}>
+        <div className="audit-score-ring">
+          <span className="audit-score-num">{audit.score}</span>
+          <span className="audit-score-max">/100</span>
+        </div>
+        <div className="audit-score-info">
+          <span className={`audit-risk-badge ${risk.cls}`}>{risk.label}</span>
+          <span className="audit-score-label">Conformidade</span>
+          <span className="audit-findings-count">
+            {audit.findings.length} {audit.findings.length === 1 ? "achado" : "achados"} · {presentes}/{totalCheck} documentos
+          </span>
+        </div>
+      </div>
+
+      {/* Parecer da IA */}
+      {audit.aiSummary && (
+        <div className="audit-summary">
+          <p className="audit-section-label">Parecer</p>
+          <p className="audit-summary-text">{audit.aiSummary}</p>
+        </div>
+      )}
+
+      {/* Achados */}
+      <div className="audit-block">
+        <p className="audit-section-label">Achados ({audit.findings.length})</p>
+        {sortedFindings.length === 0 ? (
+          <div className="audit-no-findings">✓ Nenhuma irregularidade identificada.</div>
+        ) : (
+          <div className="audit-findings">
+            {sortedFindings.map((f, i) => (
+              <AuditFindingCard key={i} finding={f} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Checklist documental */}
+      <div className="audit-block">
+        <p className="audit-section-label">Checklist documental</p>
+        <ul className="audit-checklist">
+          {audit.checklist.map((c, i) => (
+            <li key={i} className={`audit-check audit-check--${c.status}`}>
+              <span className="audit-check-icon">
+                {c.status === "presente" ? "✓" : c.critical ? "✗" : "○"}
+              </span>
+              <span className="audit-check-label">
+                {c.label}
+                {c.status === "ausente" && c.critical && <span className="audit-check-tag">obrigatório</span>}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div className="audit-footer">
+        <span>Gerado em {genStr}</span>
+        <button className="btn-collect-reset" onClick={onRun}>↺ Reauditar</button>
+      </div>
+    </div>
+  );
+}
+
+function AuditFindingCard({ finding }: { finding: AuditFinding }) {
+  const [open, setOpen] = useState(false);
+  const meta = SEVERITY_META[finding.severity];
+  return (
+    <div className={`audit-finding ${meta.cls}`}>
+      <button className="audit-finding-head" onClick={() => setOpen((o) => !o)}>
+        <span className="audit-finding-sev">{meta.icon}</span>
+        <span className="audit-finding-title">{finding.title}</span>
+        <span className="audit-finding-cat">{CATEGORY_LABEL[finding.category] ?? finding.category}</span>
+        <span className="audit-finding-chevron">{open ? "▾" : "▸"}</span>
+      </button>
+      {open && (
+        <div className="audit-finding-body">
+          <p className="audit-finding-desc">{finding.description}</p>
+          {finding.recommendation && (
+            <p className="audit-finding-rec">
+              <strong>Recomendação:</strong> {finding.recommendation}
+            </p>
+          )}
+          <span className={`audit-finding-source audit-finding-source--${finding.source}`}>
+            {finding.source === "ia" ? "🤖 IA" : "⚙ Regra automática"}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Componente: Painel de Q&A (pergunte ao processo) ────────────────────────────
+
+const QA_SUGGESTIONS = [
+  "Qual o objeto e o valor do processo?",
+  "Quem autorizou e em que data?",
+  "Há parecer jurídico? Foi favorável?",
+  "Qual o status atual e o que falta?",
+  "Quem é o fornecedor/contratado?",
+];
+
+function QaPanel({
+  processId,
+  hasData,
+  hasApiKey,
+  onSettings,
+}: {
+  processId: string;
+  hasData: boolean;
+  hasApiKey: boolean;
+  onSettings: () => void;
+}) {
+  const { messages, loading, error, ask, clear } = useQa(processId);
+  const [input, setInput] = useState("");
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [messages, loading]);
+
+  function send(text?: string) {
+    const q = (text ?? input).trim();
+    if (!q) return;
+    ask(q);
+    setInput("");
+  }
+
+  if (!hasApiKey) {
+    return (
+      <div className="qa-empty">
+        <p className="qa-empty-title">💬 Pergunte ao processo</p>
+        <p className="qa-empty-desc">Configure uma chave de IA para conversar sobre o conteúdo do processo.</p>
+        <button className="btn-config-link" onClick={onSettings}>Configurar agora →</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="qa-panel">
+      <div className="qa-messages" ref={scrollRef}>
+        {messages.length === 0 && !loading && (
+          <div className="qa-intro">
+            <p className="qa-intro-text">
+              {hasData
+                ? "Pergunte qualquer coisa sobre este processo. As respostas usam os documentos e o histórico coletados."
+                : "Colete os dados do processo primeiro para respostas completas. Você ainda pode perguntar, mas a IA terá pouco contexto."}
+            </p>
+            <div className="qa-suggestions">
+              {QA_SUGGESTIONS.map((s, i) => (
+                <button key={i} className="qa-suggestion" onClick={() => send(s)}>{s}</button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {messages.map((m, i) => (
+          <div key={i} className={`qa-msg qa-msg--${m.role}`}>
+            <div className="qa-bubble">{m.content}</div>
+          </div>
+        ))}
+
+        {loading && (
+          <div className="qa-msg qa-msg--assistant">
+            <div className="qa-bubble qa-bubble--loading">
+              <span className="qa-dot" /><span className="qa-dot" /><span className="qa-dot" />
+            </div>
+          </div>
+        )}
+
+        {error && <div className="summary-error summary-error--inline"><p>{error}</p></div>}
+      </div>
+
+      <div className="qa-inputbar">
+        {messages.length > 0 && (
+          <button className="qa-clear" onClick={clear} title="Limpar conversa">🗑</button>
+        )}
+        <textarea
+          className="qa-input"
+          placeholder="Pergunte sobre o processo…"
+          value={input}
+          rows={1}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+          }}
+          disabled={loading}
+        />
+        <button className="qa-send" onClick={() => send()} disabled={loading || !input.trim()}>→</button>
+      </div>
+    </div>
+  );
+}
+
 // ── Renderer do resumo da IA ────────────────────────────────────────────────────
 // Suporta: **Heading**, separadores ────, bullets (•, →, -), linhas em branco.
 // Para bullets "campo: valor", destaca o label em negrito leve.
@@ -758,6 +1198,7 @@ function ProcessDetailScreen({
 }) {
   const { details, summarizing, summaryError, generateSummary } = useProcessDetails(processId);
   const { progress: collectProgress, startCollection, stopCollection, reset: resetCollection } = useCollectionProgress(processId);
+  const { audit, auditing, error: auditError, runAudit } = useAudit(processId, details);
   const { config } = useAiConfig();
   const hasApiKey = !!config?.apiKey;
   const hasData = !!(details?.documents?.length || details?.andamento?.length);
@@ -814,6 +1255,11 @@ function ProcessDetailScreen({
     });
   }
 
+  function exportDossie() {
+    const url = chrome.runtime.getURL("dist/report.html") + "?id=" + encodeURIComponent(processId);
+    chrome.tabs.create({ url });
+  }
+
   const timeAgo = details?.extractedAt
     ? (() => {
         const d = Math.floor((Date.now() - details.extractedAt) / 1000);
@@ -828,6 +1274,15 @@ function ProcessDetailScreen({
       <header className="screen-header">
         <button className="btn-back" onClick={onBack}>‹</button>
         <span className="screen-title" title={processId}>{processId}</span>
+        {details && (
+          <button
+            className="btn-refresh"
+            title="Exportar dossiê (PDF / Word)"
+            onClick={exportDossie}
+          >
+            📥
+          </button>
+        )}
         <button
           className="btn-refresh"
           title="Expandir todas as pastas da árvore"
@@ -870,7 +1325,40 @@ function ProcessDetailScreen({
               className={`detail-tab ${tab === "tramitacao" ? "detail-tab--active" : ""}`}
               onClick={() => setTab("tramitacao")}
             >Tramitação</button>
+            <button
+              className={`detail-tab ${tab === "auditoria" ? "detail-tab--active" : ""}`}
+              onClick={() => setTab("auditoria")}
+            >
+              Auditoria
+              {audit && <span className={`detail-tab-dot ${RISK_META[audit.riskLevel].cls}`} />}
+            </button>
+            <button
+              className={`detail-tab ${tab === "perguntar" ? "detail-tab--active" : ""}`}
+              onClick={() => setTab("perguntar")}
+            >Perguntar</button>
           </div>
+
+          {/* Aba: Auditoria */}
+          {tab === "auditoria" && (
+            <AuditPanel
+              audit={audit}
+              auditing={auditing}
+              error={auditError}
+              onRun={runAudit}
+              hasData={hasData}
+              hasApiKey={hasApiKey}
+            />
+          )}
+
+          {/* Aba: Perguntar */}
+          {tab === "perguntar" && (
+            <QaPanel
+              processId={processId}
+              hasData={hasData}
+              hasApiKey={hasApiKey}
+              onSettings={onSettings}
+            />
+          )}
 
           {/* Aba: Tramitação */}
           {tab === "tramitacao" && (
@@ -923,6 +1411,27 @@ function ProcessDetailScreen({
               ))}
             </div>
           )}
+
+          {/* Documentos-chave (Termo de Referência, Contrato, Parecer…) */}
+          {(() => {
+            const keyDocs = extractImportantDocs(details.documents);
+            if (keyDocs.length === 0) return null;
+            return (
+              <div className="detail-section">
+                <p className="detail-section-title">📎 Documentos-chave ({keyDocs.length})</p>
+                <ul className="keydoc-list">
+                  {keyDocs.slice(0, 10).map((d, i) => (
+                    <li key={i} className={`keydoc ${d.priority === 1 ? "keydoc--top" : ""}`}>
+                      <span className="keydoc-cat">{d.category}</span>
+                      <span className="keydoc-title">{cleanDocTitle(d.title) || d.title}</span>
+                      {d.docId && <span className="keydoc-id">#{d.docId}</span>}
+                    </li>
+                  ))}
+                </ul>
+                {keyDocs.length > 10 && <p className="keydoc-more">+{keyDocs.length - 10} outros</p>}
+              </div>
+            );
+          })()}
 
           {/* Documentos — Despachos */}
           {details.documents.length > 0 && (() => {
@@ -996,6 +1505,17 @@ function ProcessDetailScreen({
 }
 
 // ── Tela: Lista de processos ────────────────────────────────────────────────────
+// Rank de risco para ordenação (menor = mais grave). Não-analisado vai pro fim.
+const RISK_RANK: Record<AuditSeverity, number> = { critico: 0, alto: 1, medio: 2, baixo: 3, ok: 3 };
+type SortKey = "risco" | "parado" | "numero";
+type RiskFilter = AuditSeverity | "nao" | null;
+
+/** Classifica um item em um "bucket" de risco para stats e filtro. */
+function riskBucket(item: PortfolioItem): AuditSeverity | "nao" {
+  if (!item.audit) return "nao";
+  return item.audit.riskLevel;
+}
+
 function ProcessListScreen({
   onBack,
   onSelect,
@@ -1003,9 +1523,69 @@ function ProcessListScreen({
   onBack: () => void;
   onSelect: (id: string) => void;
 }) {
-  const { processes, collectedAt, loading, notOnPage, collect } = useProcesses();
+  const { items, collectedAt, loading, notOnPage, collect } = usePortfolio();
+  const { queue, start: startQueue, stop: stopQueue, dismiss: dismissQueue } = useQueue();
+  const [sortKey, setSortKey] = useState<SortKey>("risco");
+  const [query, setQuery] = useState("");
+  const [riskFilter, setRiskFilter] = useState<RiskFilter>(null);
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [queueError, setQueueError] = useState<string | null>(null);
 
   useEffect(() => { collect(); }, []);
+
+  const queueRunning = queue?.status === "running";
+
+  // Contadores por bucket de risco
+  const stats = useMemo(() => {
+    const s = { critico: 0, alto: 0, medio: 0, conforme: 0, nao: 0 };
+    for (const it of items) {
+      const b = riskBucket(it);
+      if (b === "nao") s.nao++;
+      else if (b === "critico") s.critico++;
+      else if (b === "alto") s.alto++;
+      else if (b === "medio") s.medio++;
+      else s.conforme++; // baixo/ok
+    }
+    return s;
+  }, [items]);
+
+  // Filtra + ordena
+  const visible = useMemo(() => {
+    let list = items;
+
+    if (query.trim()) {
+      const q = query.toLowerCase();
+      list = list.filter((p) =>
+        p.id.toLowerCase().includes(q) ||
+        (p.type ?? "").toLowerCase().includes(q) ||
+        (p.description ?? "").toLowerCase().includes(q)
+      );
+    }
+
+    if (riskFilter) {
+      list = list.filter((p) => {
+        const b = riskBucket(p);
+        if (riskFilter === "nao") return b === "nao";
+        if (riskFilter === "baixo") return b === "baixo" || b === "ok";
+        return b === riskFilter;
+      });
+    }
+
+    const sorted = [...list];
+    if (sortKey === "risco") {
+      sorted.sort((a, b) => {
+        const ra = a.audit ? RISK_RANK[a.audit.riskLevel] : 5;
+        const rb = b.audit ? RISK_RANK[b.audit.riskLevel] : 5;
+        if (ra !== rb) return ra - rb;
+        return (b.statusInfo?.diasParado ?? -1) - (a.statusInfo?.diasParado ?? -1);
+      });
+    } else if (sortKey === "parado") {
+      sorted.sort((a, b) => (b.statusInfo?.diasParado ?? -1) - (a.statusInfo?.diasParado ?? -1));
+    }
+    // "numero" mantém a ordem original da coleta
+    return sorted;
+  }, [items, query, riskFilter, sortKey]);
 
   const timeAgo = collectedAt
     ? (() => {
@@ -1016,18 +1596,60 @@ function ProcessListScreen({
       })()
     : null;
 
+  function toggleFilter(f: RiskFilter) {
+    setRiskFilter((cur) => (cur === f ? null : f));
+  }
+
+  function toggleSel(id: string) {
+    setSelected((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  }
+
+  function cancelSelecting() {
+    setSelecting(false);
+    setSelected(new Set());
+    setQueueError(null);
+  }
+
+  async function gerarDados() {
+    if (selected.size === 0) return;
+    // Mantém a ordem visível na fila
+    const ids = visible.filter((p) => selected.has(p.id)).map((p) => p.id);
+    const ok = await startQueue(ids);
+    if (!ok) {
+      setQueueError("Abra o SEI na aba ativa para iniciar a fila de coleta.");
+      return;
+    }
+    cancelSelecting();
+  }
+
   return (
     <div className="screen screen--active">
       <header className="screen-header">
         <button className="btn-back" onClick={onBack}>‹</button>
         <span className="screen-title">Meus Processos</span>
+        {items.length > 0 && !queueRunning && (
+          <button
+            className="btn-refresh"
+            title={selecting ? "Cancelar seleção" : "Selecionar processos para coletar em lote"}
+            onClick={() => (selecting ? cancelSelecting() : setSelecting(true))}
+          >
+            {selecting ? "✕" : "☑"}
+          </button>
+        )}
         <button className="btn-refresh" onClick={collect} disabled={loading}
           title="Abra 'Controle de Processos' no SEI antes de atualizar">
           {loading ? "…" : "↻"}
         </button>
       </header>
 
-      {timeAgo && <p className="processes-meta">Atualizado {timeAgo}</p>}
+      {/* Banner da fila em lote */}
+      {queue && (
+        <QueueBanner queue={queue} onStop={stopQueue} onDismiss={dismissQueue} />
+      )}
 
       {notOnPage && (
         <div className="processes-hint">
@@ -1037,32 +1659,189 @@ function ProcessListScreen({
 
       {loading && <div className="processes-loading">Coletando processos…</div>}
 
-      {!loading && !notOnPage && processes.length === 0 && (
+      {!loading && !notOnPage && items.length === 0 && (
         <div className="processes-empty">
           Nenhum processo encontrado.<br />
           Navegue até "Controle de Processos" no SEI.
         </div>
       )}
 
-      <div className="process-list">
-        {processes.map((p) => (
-          <button key={p.id} className="process-item process-item--clickable" onClick={() => onSelect(p.id)}>
-            <div className="process-id">{p.id}</div>
-            {p.type && <div className="process-type">{p.type}</div>}
-            {p.description && (
-              <div className="process-desc" title={p.description}>
-                {p.description.length > 55 ? p.description.slice(0, 55) + "…" : p.description}
+      {items.length > 0 && (
+        <>
+          {/* Barra de stats — chips clicáveis filtram por risco */}
+          <div className="portfolio-stats">
+            <StatChip label="Crítico" count={stats.critico} cls="risk--critico"
+              active={riskFilter === "critico"} onClick={() => toggleFilter("critico")} />
+            <StatChip label="Alto" count={stats.alto} cls="risk--alto"
+              active={riskFilter === "alto"} onClick={() => toggleFilter("alto")} />
+            <StatChip label="Médio" count={stats.medio} cls="risk--medio"
+              active={riskFilter === "medio"} onClick={() => toggleFilter("medio")} />
+            <StatChip label="Conforme" count={stats.conforme} cls="risk--baixo"
+              active={riskFilter === "baixo"} onClick={() => toggleFilter("baixo")} />
+            <StatChip label="A analisar" count={stats.nao} cls="risk--nao"
+              active={riskFilter === "nao"} onClick={() => toggleFilter("nao")} />
+          </div>
+
+          {/* Controles: busca + ordenação */}
+          <div className="portfolio-controls">
+            <input
+              className="portfolio-search"
+              placeholder="Buscar nº, tipo ou objeto…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+            <select className="portfolio-sort" value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)}>
+              <option value="risco">Risco</option>
+              <option value="parado">Mais parados</option>
+              <option value="numero">Ordem original</option>
+            </select>
+          </div>
+
+          {/* Barra de seleção em lote */}
+          {selecting && (
+            <div className="select-bar">
+              <div className="select-bar-actions">
+                <button className="select-link" onClick={() => setSelected(new Set(visible.map((p) => p.id)))}>
+                  Todos ({visible.length})
+                </button>
+                <button className="select-link" onClick={() => setSelected(new Set())}>Limpar</button>
               </div>
-            )}
-            <div className="process-meta-row">
-              {p.lastUpdate && <span className="process-date">🕐 {p.lastUpdate}</span>}
-              {p.assignedTo && <span className="process-assigned">👤 {p.assignedTo}</span>}
-              <span className="process-detail-hint">Ver detalhes →</span>
+              <button
+                className="btn-gerar"
+                disabled={selected.size === 0 || queueRunning}
+                onClick={gerarDados}
+              >
+                ⚡ Gerar dados ({selected.size})
+              </button>
             </div>
-          </button>
-        ))}
+          )}
+          {queueError && <div className="summary-error summary-error--inline" style={{ margin: "0 12px 8px" }}><p>{queueError}</p></div>}
+
+          {timeAgo && !selecting && <p className="processes-meta">Atualizado {timeAgo} · {visible.length} de {items.length}</p>}
+
+          <div className="process-list">
+            {visible.map((p) => (
+              <PortfolioCard
+                key={p.id}
+                item={p}
+                selecting={selecting}
+                selected={selected.has(p.id)}
+                isQueueCurrent={queue?.current === p.id}
+                onClick={() => (selecting ? toggleSel(p.id) : onSelect(p.id))}
+              />
+            ))}
+            {visible.length === 0 && (
+              <div className="processes-empty">Nenhum processo neste filtro.</div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function QueueBanner({ queue, onStop, onDismiss }: {
+  queue: CollectionQueueState; onStop: () => void; onDismiss: () => void;
+}) {
+  const processed = queue.done.length + queue.failed.length;
+  const pct = queue.total > 0 ? Math.round((processed / queue.total) * 100) : 0;
+
+  if (queue.status === "done") {
+    return (
+      <div className="queue-banner queue-banner--done">
+        <div className="queue-banner-row">
+          <span>✓ Fila concluída — {queue.done.length} coletado(s){queue.failed.length > 0 ? `, ${queue.failed.length} falha(s)` : ""}</span>
+          <button className="queue-dismiss" onClick={onDismiss}>Fechar</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="queue-banner queue-banner--running">
+      <div className="queue-banner-row">
+        <span className="queue-banner-title">
+          <span className="collect-spinner" /> Coletando em lote — {processed + 1} de {queue.total}
+        </span>
+        <button className="queue-stop" onClick={onStop}>Parar</button>
+      </div>
+      {queue.current && <div className="queue-current">Processando {queue.current}</div>}
+      <div className="collect-progress-track">
+        <div className="collect-progress-fill" style={{ width: `${pct}%` }} />
       </div>
     </div>
+  );
+}
+
+function StatChip({ label, count, cls, active, onClick }: {
+  label: string; count: number; cls: string; active: boolean; onClick: () => void;
+}) {
+  return (
+    <button
+      className={`stat-chip ${cls} ${active ? "stat-chip--active" : ""} ${count === 0 ? "stat-chip--empty" : ""}`}
+      onClick={onClick}
+      disabled={count === 0}
+    >
+      <span className="stat-chip-count">{count}</span>
+      <span className="stat-chip-label">{label}</span>
+    </button>
+  );
+}
+
+function PortfolioCard({ item, onClick, selecting = false, selected = false, isQueueCurrent = false }: {
+  item: PortfolioItem;
+  onClick: () => void;
+  selecting?: boolean;
+  selected?: boolean;
+  isQueueCurrent?: boolean;
+}) {
+  const bucket = riskBucket(item);
+  const riskCls = bucket === "nao" ? "risk--nao"
+    : bucket === "ok" ? "risk--baixo"
+    : `risk--${bucket}`;
+  const riskLabel = bucket === "nao" ? "A analisar" : RISK_META[bucket].label;
+  const dias = item.statusInfo?.diasParado ?? null;
+  const parado = dias !== null && !item.statusInfo?.concluido && dias > 0;
+  const alertaParado = parado && dias > 30;
+
+  return (
+    <button
+      className={`process-item process-item--clickable ${selected ? "process-item--selected" : ""} ${isQueueCurrent ? "process-item--current" : ""}`}
+      onClick={onClick}
+    >
+      <div className="process-item-top">
+        {selecting && (
+          <span className={`process-check ${selected ? "process-check--on" : ""}`}>
+            {selected ? "✓" : ""}
+          </span>
+        )}
+        <span className="process-id">{item.id}</span>
+        {isQueueCurrent && <span className="process-queue-tag">⏳ coletando</span>}
+        <span className={`process-risk-badge ${riskCls}`}>
+          {item.audit ? `${riskLabel} · ${item.audit.score}` : riskLabel}
+        </span>
+      </div>
+      {item.type && <div className="process-type">{item.type}</div>}
+      {item.description && (
+        <div className="process-desc" title={item.description}>
+          {item.description.length > 60 ? item.description.slice(0, 60) + "…" : item.description}
+        </div>
+      )}
+      <div className="process-meta-row">
+        {item.statusInfo && (
+          <span className="process-status-tag">{item.statusInfo.statusLabel}</span>
+        )}
+        {parado && (
+          <span className={`process-parado ${alertaParado ? "process-parado--alert" : ""}`}>
+            ⏱ {dias}d parado
+          </span>
+        )}
+        {!item.collected && item.lastUpdate && (
+          <span className="process-date">🕐 {item.lastUpdate}</span>
+        )}
+        <span className="process-detail-hint">→</span>
+      </div>
+    </button>
   );
 }
 

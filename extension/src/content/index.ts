@@ -5,7 +5,8 @@
  * Detecta sessão, extrai lista de processos e detalhes de processos abertos.
  */
 
-import type { SessionInfo, SeiProcess, ProcessDetails, AndamentoEntry } from "@shared/index";
+import type { SessionInfo, SeiProcess, ProcessDetails, AndamentoEntry, CollectionQueueState } from "@shared/index";
+import { extractImportantDocs } from "@shared/index";
 
 // ─── Guard de contexto ─────────────────────────────────────────────────────────
 // Após reload da extensão, chrome.runtime.id fica undefined — protege todos os calls
@@ -21,12 +22,32 @@ function safeStorageSet(data: Record<string, unknown>) {
   catch (e) { if (!String(e).includes("context invalidated")) console.error(e); }
 }
 
+function safeStorageRemove(key: string) {
+  if (!isContextValid()) return;
+  try { chrome.storage.local.remove(key); } catch { /* contexto invalidado */ }
+}
+
 /** Wrapper Promise-based para chrome.storage.local.get com tipagem estável.
- *  Evita o problema de inferência de generic quando se usa template literals. */
+ *  Resiliente à invalidação de contexto (resolve {} em vez de lançar). */
 function storageGet(key: string | string[] | null): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
-    chrome.storage.local.get(key as string, (r) => resolve(r as Record<string, unknown>));
+    if (!isContextValid()) { resolve({}); return; }
+    try {
+      chrome.storage.local.get(key as string, (r) => {
+        // lastError precisa ser lido para o Chrome não logar warning
+        if (chrome.runtime.lastError) { resolve({}); return; }
+        resolve((r as Record<string, unknown>) ?? {});
+      });
+    } catch { resolve({}); }
   });
+}
+
+/** Envia mensagem ao background protegendo contra contexto invalidado. */
+function safeSendMessage(message: unknown) {
+  if (!isContextValid()) return;
+  try {
+    chrome.runtime.sendMessage(message, () => { void chrome.runtime.lastError; });
+  } catch { /* contexto invalidado */ }
 }
 
 // ─── Constantes ────────────────────────────────────────────────────────────────
@@ -401,42 +422,53 @@ const autoExpandedProcesses = new Set<string>();
 const autoAndamentoOpened = new Set<string>();
 
 function findAndamentoButton(): HTMLElement | null {
-  // Busca em múltiplos contextos: frame atual + iframes filhos
-  const docs: Document[] = [document];
-  try {
-    const outer = document.querySelector<HTMLIFrameElement>("#ifrConteudoVisualizacao");
-    if (outer?.contentDocument) docs.push(outer.contentDocument);
-  } catch { /* cross-origin */ }
+  // Busca em TODOS os frames acessíveis (a toolbar fica em iframes aninhados no TJPE)
+  const docs = getAllAccessibleDocs();
 
   const SELECTORS = [
     'a[href*="historico_processo_exibir"]',
     'a[onclick*="historico_processo_exibir"]',
+    'a[href*="procedimento_historico"]',
+    'a[onclick*="procedimento_historico"]',
     'img[alt*="Consultar Andamento"]',
     'img[title*="Consultar Andamento"]',
     'a[title*="Consultar Andamento"]',
     'a[title*="Histórico do Processo"]',
     'img[alt*="Hist"]',
+    'img[title*="Hist"]',
   ];
 
   for (const doc of docs) {
-    // 1. Seletores diretos
-    for (const sel of SELECTORS) {
-      const el = doc.querySelector<HTMLElement>(sel);
-      if (el) return el.tagName === "A" ? el : (el.closest("a") as HTMLElement | null) ?? el;
-    }
-
-    // 2. Qualquer link cujo texto/title contenha "andamento" ou "histórico"
-    for (const a of doc.querySelectorAll<HTMLAnchorElement>("a")) {
-      const text  = (a.textContent ?? "").trim();
-      const title = a.getAttribute("title") ?? "";
-      const href  = a.getAttribute("href") ?? "";
-      const click = a.getAttribute("onclick") ?? "";
-      if (/consultar\s*andamento|hist.rico\s*do\s*processo/i.test(text + title + href + click)) {
-        return a;
+    try {
+      // 1. Seletores diretos
+      for (const sel of SELECTORS) {
+        const el = doc.querySelector<HTMLElement>(sel);
+        if (el) return el.tagName === "A" ? el : (el.closest("a") as HTMLElement | null) ?? el;
       }
-    }
+
+      // 2. Qualquer link/img cujo texto/title/alt/onclick contenha "andamento" ou "histórico"
+      const RE = /consultar\s*andamento|hist[oó]rico\s*do\s*processo|andamento\s*do\s*processo/i;
+      for (const a of doc.querySelectorAll<HTMLAnchorElement>("a")) {
+        const blob = [a.textContent, a.getAttribute("title"), a.getAttribute("href"), a.getAttribute("onclick")].join(" ");
+        if (RE.test(blob)) return a;
+      }
+      for (const img of doc.querySelectorAll<HTMLImageElement>("img")) {
+        const blob = [img.getAttribute("alt"), img.getAttribute("title"), img.getAttribute("onclick")].join(" ");
+        if (RE.test(blob)) return (img.closest("a") as HTMLElement | null) ?? img;
+      }
+    } catch { /* frame inacessível */ }
   }
 
+  return null;
+}
+
+/** Tenta achar o botão de andamento com algumas tentativas (toolbar pode demorar a carregar). */
+async function findAndamentoButtonWithRetry(processId: string, attempts = 6, gapMs = 1000): Promise<HTMLElement | null> {
+  for (let i = 0; i < attempts; i++) {
+    const btn = findAndamentoButton();
+    if (btn) return btn;
+    if (await sleepCancellable(gapMs, processId)) return null;
+  }
   return null;
 }
 
@@ -954,7 +986,8 @@ function isDocRestrictedInTree(docId: string): boolean {
  */
 async function waitForDespachoContent(docId: string, timeoutMs = 8000): Promise<string> {
   const key = `docContent_${docId}`;
-  try { chrome.storage.local.remove(key); } catch { return ""; }
+  if (!isContextValid()) return "";
+  safeStorageRemove(key);
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -966,7 +999,7 @@ async function waitForDespachoContent(docId: string, timeoutMs = 8000): Promise<
       const result = await storageGet(key);
       const stored = result[key] as string | undefined;
       if (stored && stored.length > 50) {
-        chrome.storage.local.remove(key);
+        safeStorageRemove(key);
         return stored;
       }
 
@@ -986,13 +1019,13 @@ async function runFullCollection(processId: string) {
   const TOTAL = 4;
 
   // Limpa qualquer flag de cancelamento residual antes de começar
-  try { chrome.storage.local.remove(`cancelCollection_${processId}`); } catch { /* ignora */ }
+  safeStorageRemove(`cancelCollection_${processId}`);
 
   const checkCancel = async (): Promise<boolean> => {
     if (await isCancelled(processId)) {
       console.log(`[SEI Assistant] Coleta cancelada pelo usuário (${processId})`);
       setCollectionProgress(processId, "Coleta cancelada pelo usuário.", 0, TOTAL, "error", "Cancelado");
-      chrome.storage.local.remove(`cancelCollection_${processId}`);
+      safeStorageRemove(`cancelCollection_${processId}`);
       return true;
     }
     return false;
@@ -1015,9 +1048,10 @@ async function runFullCollection(processId: string) {
     if (await sleepCancellable(800, processId)) { await checkCancel(); return; }
 
     // ── Passo 2: Abrir Consultar Andamento + paginar ──────────────────────────
-    setCollectionProgress(processId, "Coletando histórico de tramitação…", 2, TOTAL);
+    setCollectionProgress(processId, "Abrindo histórico de tramitação…", 2, TOTAL);
     autoAndamentoOpened.delete(processId);
-    const andBtn = findAndamentoButton();
+    // Retry: a toolbar do SEI pode demorar a renderizar após a navegação
+    const andBtn = await findAndamentoButtonWithRetry(processId);
     if (andBtn) {
       andBtn.click();
       // Espera adaptativa: monitora storage até o andamento estabilizar
@@ -1048,10 +1082,18 @@ async function runFullCollection(processId: string) {
         }
       }
       if (lastCount === 0) {
-        console.warn("[SEI Assistant] Andamento ficou vazio após timeout — seguindo sem datas");
+        console.log("[SEI Assistant] Andamento vazio após timeout — seguindo sem datas");
       }
     } else {
-      console.warn("[SEI Assistant] Botão 'Consultar Andamento' não encontrado — pulando passo 2");
+      // Não achou o botão — mas pode já ter andamento coletado antes (auto-open).
+      // Só é problema se não houver histórico nenhum no storage.
+      const snap = await storageGet(`proc_${processId}`);
+      const jaTem = ((snap[`proc_${processId}`] as ProcessDetails | undefined)?.andamento?.length ?? 0) > 0;
+      if (jaTem) {
+        console.log("[SEI Assistant] Andamento já coletado — passo 2 dispensado");
+      } else {
+        console.log("[SEI Assistant] Botão 'Consultar Andamento' não encontrado — histórico não coletado neste processo");
+      }
     }
 
     // ── Passo 3: Ler documentos via clique na árvore ────────────────────────
@@ -1064,8 +1106,19 @@ async function runFullCollection(processId: string) {
     const allDocs = details?.documents ?? [];
     const despachoTitles = allDocs.filter((d) => DESPACHO_RE.test(d));
 
-    const toRead = despachoTitles;
-    console.log(`[SEI Assistant] Despachos: ${toRead.length} total — lendo todos`);
+    // Documentos importantes (Termo de Referência, Contrato, Parecer, DFD…) primeiro,
+    // depois os despachos. Dedup por docId para não ler o mesmo duas vezes.
+    const importantTitles = extractImportantDocs(allDocs).map((d) => d.title);
+    const toRead: string[] = [];
+    const seenRead = new Set<string>();
+    for (const title of [...importantTitles, ...despachoTitles]) {
+      const id = title.match(/\b(\d{5,8})\b/)?.[1];
+      const key = id ?? title;
+      if (seenRead.has(key)) continue;
+      seenRead.add(key);
+      toRead.push(title);
+    }
+    console.log(`[SEI Assistant] Lendo ${toRead.length} documento(s): ${importantTitles.length} importantes + ${despachoTitles.length} despachos`);
 
     if (toRead.length > 0) {
       const despachoTexts: Record<string, string> = {};
@@ -1080,13 +1133,13 @@ async function runFullCollection(processId: string) {
 
         // Pula documentos restritos sem tentar clicar
         if (isDocRestrictedInTree(docId)) {
-          console.log(`[SEI Assistant] Despacho ${docId}: restrito — pulando`);
+          console.log(`[SEI Assistant] Documento ${docId}: restrito — pulando`);
           continue;
         }
 
         setCollectionProgress(
           processId,
-          `Lendo despacho ${i + 1} de ${toRead.length}… (${readCount} lidos)`,
+          `Lendo documento ${i + 1} de ${toRead.length}… (${readCount} lidos)`,
           3,
           TOTAL
         );
@@ -1095,15 +1148,15 @@ async function runFullCollection(processId: string) {
           const clicked = clickDespachoInTree(docId, title);
           if (clicked) {
             const text = await waitForDespachoContent(docId, 5000);
-            console.log(`[SEI Assistant] Despacho ${docId}: ${text.length > 0 ? text.length + " chars ✓" : "timeout"}`);
+            console.log(`[SEI Assistant] Documento ${docId}: ${text.length > 0 ? text.length + " chars ✓" : "timeout"}`);
             if (text.length > 50) {
               readCount++;
               despachoTexts[title] = text;
-              console.log(`[SEI Assistant] Despacho "${title}" lido (${text.length} chars)`);
+              console.log(`[SEI Assistant] Documento "${title}" lido (${text.length} chars)`);
             }
           }
         } catch (e) {
-          console.warn(`[SEI Assistant] Erro ao ler despacho "${title}":`, e);
+          console.warn(`[SEI Assistant] Erro ao ler documento "${title}":`, e);
         }
 
         if (await sleepCancellable(200, processId)) { await checkCancel(); return; }
@@ -1133,19 +1186,94 @@ async function runFullCollection(processId: string) {
     }
 
     // ── Passo 4: Gerar resumo com IA ──────────────────────────────────────────
+    if (!isContextValid()) return;
     setCollectionProgress(processId, "Gerando resumo com IA…", 4, TOTAL);
-    chrome.runtime.sendMessage(
-      { type: "COLLECTION_DONE", payload: { processId } },
-      () => { /* background dispara a IA */ }
-    );
+    safeSendMessage({ type: "COLLECTION_DONE", payload: { processId } });
+
+    // Se faz parte de uma fila em lote, avança para o próximo processo
+    await maybeAdvanceQueue(processId, true);
 
   } catch (e) {
     console.error("[SEI Assistant] Erro na coleta:", e);
     // Contexto pode ter sido invalidado — protege o set
     if (isContextValid()) {
       setCollectionProgress(processId, "Erro durante a coleta.", 0, TOTAL, "error", String(e));
+      // Mesmo com erro, avança a fila para não travar o lote
+      await maybeAdvanceQueue(processId, false);
     }
   }
+}
+
+// ─── Fila de coleta em lote ───────────────────────────────────────────────────
+// Persistida em storage `collectionQueue`. Cada processo é coletado via o mesmo
+// fluxo de pendingCollection + navegação; ao terminar um, dispara o próximo.
+
+/**
+ * Avança a fila após terminar um processo. Retorna true se havia fila ativa.
+ * success=false marca o processo como falho mas mantém o lote rodando.
+ */
+async function maybeAdvanceQueue(finishedId: string, success: boolean): Promise<boolean> {
+  if (!isContextValid()) return false;
+  const q = (await storageGet("collectionQueue")).collectionQueue as CollectionQueueState | undefined;
+  if (!q || q.status !== "running" || q.current !== finishedId) return false;
+
+  const done = success ? [...q.done, finishedId] : q.done;
+  const failed = success ? q.failed : [...q.failed, finishedId];
+
+  if (q.remaining.length === 0) {
+    // Fila concluída
+    safeStorageSet({ collectionQueue: { ...q, current: null, done, failed, status: "done" } });
+    console.log(`[SEI Assistant] Fila concluída: ${done.length} ok, ${failed.length} falhas`);
+    return true;
+  }
+
+  const [next, ...rest] = q.remaining;
+  safeStorageSet({
+    collectionQueue: { ...q, current: next, remaining: rest, done, failed },
+    [`pendingCollection_${next}`]: true,
+  });
+  setCollectionProgress(next, "Próximo da fila…", 0, 4);
+  console.log(`[SEI Assistant] Fila avança para ${next} (${done.length + failed.length + 1}/${q.total})`);
+
+  // Navega para o Controle de Processos para abrir o próximo
+  // (se já estiver lá, o tryAutoOpenPendingProcess cuida; senão navega)
+  setTimeout(() => {
+    if (!isContextValid()) return;
+    if (isProcessListPage()) tryAutoOpenPendingProcess();
+    else navigateToControleProcessos();
+  }, 600);
+  return true;
+}
+
+function startQueue(processIds: string[]): boolean {
+  if (!processIds.length) return false;
+  const [first, ...rest] = processIds;
+  const queue: CollectionQueueState = {
+    current: first, remaining: rest, done: [], failed: [],
+    total: processIds.length, status: "running", startedAt: Date.now(),
+  };
+  safeStorageSet({ collectionQueue: queue, [`pendingCollection_${first}`]: true });
+  setCollectionProgress(first, "Iniciando fila…", 0, 4);
+
+  if (isProcessListPage()) {
+    tryAutoOpenPendingProcess();
+    return true;
+  }
+  return navigateToControleProcessos();
+}
+
+function stopQueue() {
+  chrome.storage.local.get(null, (all) => {
+    if (!isContextValid()) return;
+    const q = all.collectionQueue as CollectionQueueState | undefined;
+    // Cancela o processo em andamento e remove pendings
+    if (q?.current) safeStorageSet({ [`cancelCollection_${q.current}`]: true });
+    for (const k of Object.keys(all)) {
+      if (k.startsWith("pendingCollection_")) chrome.storage.local.remove(k);
+    }
+    chrome.storage.local.remove("collectionQueue");
+    console.log("[SEI Assistant] Fila interrompida pelo usuário");
+  });
 }
 
 // ─── Navegação segura para Controle de Processos ──────────────────────────────
@@ -1232,6 +1360,19 @@ if (isContextValid()) {
       // Também limpa pendingCollection caso ainda nem tenha começado
       chrome.storage.local.remove(`pendingCollection_${processId}`);
       console.log(`[SEI Assistant] Cancelamento solicitado para ${processId}`);
+      sendResponse({ ok: true });
+      return true;
+    }
+
+    if (message.type === "START_QUEUE") {
+      const { processIds } = (message.payload ?? {}) as { processIds: string[] };
+      const started = startQueue(processIds ?? []);
+      sendResponse({ ok: started, count: processIds?.length ?? 0 });
+      return true;
+    }
+
+    if (message.type === "STOP_QUEUE") {
+      stopQueue();
       sendResponse({ ok: true });
       return true;
     }

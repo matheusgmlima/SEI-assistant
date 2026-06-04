@@ -6,3 +6,5 @@
 export * from "./types/session";
 export * from "./types/process";
 export * from "./types/messages";
+export * from "./audit";
+export * from "./documents";
