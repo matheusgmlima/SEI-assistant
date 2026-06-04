@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { SessionInfo, SeiProcess, ProcessDetails, AndamentoEntry } from "@shared/index";
 import type { AiConfig } from "../background/index";
 
@@ -21,6 +21,7 @@ interface UnitPhase {
   durationDays: number | null;
   despachos: DespachoItem[];
   isCurrent: boolean;
+  concluded: boolean;  // última entrada foi "Conclusão do processo na unidade"
 }
 
 function parseDate(s: string): Date | null {
@@ -105,40 +106,95 @@ function buildTramitacao(details: ProcessDetails): UnitPhase[] {
     // Reconstrói fases: cada vez que a unidade muda, abre nova fase
     const phases: UnitPhase[] = [];
     let current: UnitPhase | null = null;
+    let lastDescription = "";
 
     for (const e of sorted) {
       const u = e.unit!.trim();
+      lastDescription = e.description ?? "";
+
       if (!current || current.unit !== u) {
         if (current) current.leftAt = e.date;
-        // Fuzzy match: encontra despachos cuja unidade badge bate com a unidade do andamento
-        const matchedDespachos: DespachoItem[] = [];
-        byUnit.forEach((desps, dUnit) => {
-          if (unitsMatch(u, dUnit)) matchedDespachos.push(...desps);
-        });
-
         current = {
           unit: u,
           enteredAt: e.date,
           leftAt: null,
           durationDays: null,
-          despachos: matchedDespachos,
+          despachos: [],        // preenchido abaixo por docId proporcional
           isCurrent: false,
+          concluded: false,
         };
         phases.push(current);
       }
     }
 
+    // Detecta "Conclusão do processo na unidade" no último entry
+    const isConcluded = /conclus/i.test(lastDescription);
+
     // Calcula durações e marca fase atual
     for (let i = 0; i < phases.length; i++) {
       const p = phases[i];
       p.isCurrent = i === phases.length - 1;
+      p.concluded = p.isCurrent && isConcluded;
+
+      if (p.isCurrent && isConcluded && sorted.length > 0) {
+        const lastEntry = sorted[sorted.length - 1];
+        if (lastEntry.unit?.trim() === p.unit) p.leftAt = lastEntry.date;
+      }
+
       if (p.enteredAt && p.leftAt) {
         const a = parseDate(p.enteredAt), b = parseDate(p.leftAt);
         if (a && b) p.durationDays = Math.round(Math.abs(b.getTime() - a.getTime()) / 86400000);
-      } else if (p.isCurrent && p.enteredAt) {
+      } else if (p.isCurrent && !isConcluded && p.enteredAt) {
         const a = parseDate(p.enteredAt);
         if (a) p.durationDays = Math.round((Date.now() - a.getTime()) / 86400000);
       }
+    }
+
+    // ── Distribui despachos por fase via posição proporcional do docId ────────────
+    // DocIds são sequenciais no SEI (maior = mais recente). Interpolamos cada
+    // despacho para a fase cujo intervalo de tempo o cobre.
+    const allDespachosWithId = allDespachos
+      .filter((d) => d.docId !== null)
+      .sort((a, b) => Number(a.docId) - Number(b.docId));
+
+    const noIdDespachos = allDespachos.filter((d) => d.docId === null);
+
+    if (phases.length > 0 && allDespachosWithId.length > 0) {
+      const firstMs = parseDate(phases[0].enteredAt ?? "")?.getTime() ?? 0;
+      const lastPhase = phases[phases.length - 1];
+      const lastMs = lastPhase.leftAt
+        ? (parseDate(lastPhase.leftAt)?.getTime() ?? Date.now())
+        : Date.now();
+      const totalMs = Math.max(lastMs - firstMs, 1);
+
+      for (let di = 0; di < allDespachosWithId.length; di++) {
+        // Posição proporcional na lista de docIds → tempo estimado de criação
+        const ratio = allDespachosWithId.length > 1
+          ? di / (allDespachosWithId.length - 1)
+          : 0;
+        const estimatedMs = firstMs + ratio * totalMs;
+
+        // Encontra a fase cujo intervalo cobre esse tempo estimado
+        let target = phases[phases.length - 1];
+        for (const p of phases) {
+          const pStart = parseDate(p.enteredAt ?? "")?.getTime() ?? 0;
+          const pEnd = p.leftAt
+            ? (parseDate(p.leftAt)?.getTime() ?? Date.now())
+            : Date.now();
+          if (estimatedMs >= pStart && estimatedMs <= pEnd) {
+            target = p;
+            break;
+          }
+        }
+        target.despachos.push(allDespachosWithId[di]);
+      }
+    }
+
+    // Despachos sem docId: atribui à fase por nome (fallback)
+    for (const d of noIdDespachos) {
+      const dUnit = (d as DespachoItem & { unit: string }).unit ?? "";
+      const target = phases.find((p) => unitsMatch(p.unit, dUnit)) ?? phases[phases.length - 1];
+      if (target) target.despachos.push(d);
     }
 
     return phases;
@@ -148,7 +204,7 @@ function buildTramitacao(details: ProcessDetails): UnitPhase[] {
   const result: UnitPhase[] = [];
   for (const [unit, despachos] of byUnit.entries()) {
     if (unit === "—") continue;
-    result.push({ unit, enteredAt: null, leftAt: null, durationDays: null, despachos, isCurrent: false });
+    result.push({ unit, enteredAt: null, leftAt: null, durationDays: null, despachos, isCurrent: false, concluded: false });
   }
   if (result.length > 0) result[result.length - 1].isCurrent = true;
   return result;
@@ -179,6 +235,64 @@ function useSession() {
     return () => { clearInterval(iv); chrome.storage.onChanged.removeListener(fn); };
   }, []);
   return session;
+}
+
+// ─── Hook: progresso de coleta ─────────────────────────────────────────────────
+interface CollectionProgress {
+  processId: string;
+  status: "running" | "done" | "error";
+  phase: string;
+  step: number;
+  totalSteps: number;
+  startedAt: number;
+  error?: string;
+}
+
+function useCollectionProgress(processId: string | null) {
+  const [progress, setProgress] = useState<CollectionProgress | null>(null);
+
+  useEffect(() => {
+    if (!processId) return;
+    const key = `collecting_${processId}`;
+
+    chrome.storage.local.get(key, (r) => { if (r[key]) setProgress(r[key]); });
+
+    const fn = (c: Record<string, chrome.storage.StorageChange>) => {
+      if (c[key]?.newValue) setProgress(c[key].newValue);
+    };
+    chrome.storage.onChanged.addListener(fn);
+    return () => chrome.storage.onChanged.removeListener(fn);
+  }, [processId]);
+
+  function startCollection() {
+    if (!processId) return;
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tabId = tabs[0]?.id;
+      if (!tabId) return;
+      chrome.tabs.sendMessage(tabId, { type: "START_COLLECTION", payload: { processId } });
+    });
+  }
+
+  function stopCollection() {
+    if (!processId) return;
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tabId = tabs[0]?.id;
+      if (!tabId) return;
+      chrome.tabs.sendMessage(tabId, { type: "STOP_COLLECTION", payload: { processId } }, () => {
+        // Ignora erro se a aba mudou — a flag em storage também é checada
+        if (chrome.runtime.lastError) { /* ok */ }
+      });
+    });
+  }
+
+  function reset() {
+    if (!processId) return;
+    chrome.storage.local.remove(`collecting_${processId}`);
+    chrome.storage.local.remove(`cancelCollection_${processId}`);
+    setProgress(null);
+  }
+
+  return { progress, startCollection, stopCollection, reset };
 }
 
 // ─── Hook: lista de processos ───────────────────────────────────────────────────
@@ -229,7 +343,8 @@ function useProcessDetails(processId: string | null) {
 
   useEffect(() => {
     if (!processId) return;
-    const key = `proc_${processId}`;
+    const pid: string = processId; // narrow para closures
+    const key = `proc_${pid}`;
 
     // Sempre busca do DB primeiro (fonte persistente) e merge com storage
     function loadFromBoth() {
@@ -237,7 +352,7 @@ function useProcessDetails(processId: string | null) {
         const stored: ProcessDetails | undefined = r[key];
 
         chrome.runtime.sendMessage(
-          { type: "GET_DB_ANDAMENTO", payload: { processId } },
+          { type: "GET_DB_ANDAMENTO", payload: { processId: pid } },
           (res) => {
             const dbAndamento: AndamentoEntry[] = res?.ok ? (res.andamento ?? []) : [];
             const storageAndamento: AndamentoEntry[] = stored?.andamento ?? [];
@@ -254,7 +369,7 @@ function useProcessDetails(processId: string | null) {
               setDetails({ ...stored, andamento: merged.length > 0 ? merged : storageAndamento });
             } else if (merged.length > 0) {
               setDetails({
-                id: processId, type: null, description: null, currentUnit: null,
+                id: pid, type: null, description: null, currentUnit: null,
                 parties: [], documents: [], andamento: merged,
                 extractedAt: Date.now(), summary: null, despachosContent: null,
                 documentLinks: {},
@@ -416,6 +531,70 @@ function SettingsScreen({ onBack }: { onBack: () => void }) {
   );
 }
 
+// ── Componente: Progress Bar de Coleta ─────────────────────────────────────────
+function CollectionProgressBar({
+  progress,
+  onStart,
+  onStop,
+  onReset,
+  hasData,
+}: {
+  progress: CollectionProgress | null;
+  onStart: () => void;
+  onStop: () => void;
+  onReset: () => void;
+  hasData: boolean;
+}) {
+  if (!progress || progress.status === "done") {
+    return (
+      <div className="collect-bar">
+        {progress?.status === "done" && (
+          <div className="collect-done">✓ Dados coletados com sucesso!</div>
+        )}
+        <button className="btn-collect" onClick={onStart}>
+          {hasData ? "↺ Atualizar dados do processo" : "⚡ Coletar dados do processo"}
+        </button>
+        {progress?.status === "done" && (
+          <button className="btn-collect-reset" onClick={onReset}>Limpar</button>
+        )}
+      </div>
+    );
+  }
+
+  if (progress.status === "error") {
+    return (
+      <div className="collect-bar">
+        <div className="collect-error">✗ {progress.phase}</div>
+        <button className="btn-collect" onClick={onStart}>Tentar novamente</button>
+        <button className="btn-collect-reset" onClick={onReset}>Limpar</button>
+      </div>
+    );
+  }
+
+  // Running
+  const pct = Math.round((progress.step / progress.totalSteps) * 100);
+  const elapsed = Math.round((Date.now() - progress.startedAt) / 1000);
+
+  return (
+    <div className="collect-bar collect-bar--running">
+      <div className="collect-phase">
+        <span className="collect-spinner" />
+        <span>{progress.phase}</span>
+      </div>
+      <div className="collect-progress-track">
+        <div className="collect-progress-fill" style={{ width: `${pct}%` }} />
+      </div>
+      <div className="collect-meta">
+        <span>Passo {progress.step}/{progress.totalSteps}</span>
+        <span>{elapsed}s</span>
+      </div>
+      <button className="btn-collect-stop" onClick={onStop} title="Cancelar coleta">
+        ✕ Parar coleta
+      </button>
+    </div>
+  );
+}
+
 // ── Componente: Árvore de Tramitação ────────────────────────────────────────────
 function TramitacaoTimeline({ details }: { details: ProcessDetails }) {
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
@@ -462,7 +641,10 @@ function TramitacaoTimeline({ details }: { details: ProcessDetails }) {
               <div className="tram-header" onClick={() => setExpanded((p) => ({ ...p, [i]: !isOpen }))}>
                 <span className="tram-unit-name">{phase.unit}</span>
                 <div className="tram-header-right">
-                  {phase.durationDays !== null && (
+                  {phase.concluded && (
+                    <span className="tram-badge tram-badge--concluded">✓ Concluído</span>
+                  )}
+                  {!phase.concluded && phase.durationDays !== null && (
                     <span className={`tram-badge ${phase.isCurrent ? "tram-badge--active" : ""}`}>
                       {phase.isCurrent ? `${phase.durationDays}d ●` : `${phase.durationDays}d`}
                     </span>
@@ -518,6 +700,52 @@ function TramitacaoTimeline({ details }: { details: ProcessDetails }) {
   );
 }
 
+// ── Renderer do resumo da IA ────────────────────────────────────────────────────
+// Suporta: **Heading**, separadores ────, bullets (•, →, -), linhas em branco.
+// Para bullets "campo: valor", destaca o label em negrito leve.
+
+const BULLET_RE = /^([•→\-*])\s+(.*)$/;
+const LABEL_RE  = /^([^:]{2,40}):\s*(.+)$/;
+const SEP_RE    = /^[─━_=]{3,}$/;
+
+function renderSummary(text: string) {
+  const lines = text.split("\n");
+  const out: ReactNode[] = [];
+
+  lines.forEach((raw, i) => {
+    const line = raw.trim();
+    if (line === "") { out.push(<div key={i} className="summary-gap" />); return; }
+    if (SEP_RE.test(line)) { out.push(<hr key={i} className="summary-sep" />); return; }
+
+    // Heading: **Titulo**
+    if (line.startsWith("**") && line.endsWith("**") && line.length > 4) {
+      out.push(<p key={i} className="summary-heading">{line.replace(/\*\*/g, "")}</p>);
+      return;
+    }
+
+    // Bullet: • / → / -
+    const bullet = line.match(BULLET_RE);
+    if (bullet) {
+      const marker = bullet[1] === "→" ? "→" : "•";
+      const rest = bullet[2];
+      const label = rest.match(LABEL_RE);
+      out.push(
+        <div key={i} className="summary-bullet">
+          <span className="summary-bullet-marker">{marker}</span>
+          <span className="summary-bullet-text">
+            {label ? <><strong className="summary-bullet-label">{label[1]}:</strong> {label[2]}</> : rest}
+          </span>
+        </div>
+      );
+      return;
+    }
+
+    out.push(<p key={i} className="summary-line">{line}</p>);
+  });
+
+  return <>{out}</>;
+}
+
 // ── Tela: Detalhe do processo ───────────────────────────────────────────────────
 function ProcessDetailScreen({
   processId,
@@ -529,8 +757,10 @@ function ProcessDetailScreen({
   onSettings: () => void;
 }) {
   const { details, summarizing, summaryError, generateSummary } = useProcessDetails(processId);
+  const { progress: collectProgress, startCollection, stopCollection, reset: resetCollection } = useCollectionProgress(processId);
   const { config } = useAiConfig();
   const hasApiKey = !!config?.apiKey;
+  const hasData = !!(details?.documents?.length || details?.andamento?.length);
   const summaryRef = useRef<HTMLDivElement>(null);
   const [tab, setTab] = useState<DetailTab>("resumo");
   const [expanding, setExpanding] = useState(false);
@@ -603,7 +833,6 @@ function ProcessDetailScreen({
           title="Expandir todas as pastas da árvore"
           onClick={expandTree}
           disabled={expanding}
-          style={{ fontSize: "12px" }}
         >
           {expanding ? "⏳" : "📂"}
         </button>
@@ -622,6 +851,15 @@ function ProcessDetailScreen({
         <div className="detail-body">
           {timeAgo && <p className="processes-meta">Dados coletados {timeAgo}</p>}
 
+          {/* Coleta guiada */}
+          <CollectionProgressBar
+            progress={collectProgress}
+            onStart={startCollection}
+            onStop={stopCollection}
+            onReset={resetCollection}
+            hasData={hasData}
+          />
+
           {/* Abas */}
           <div className="detail-tabs">
             <button
@@ -637,10 +875,9 @@ function ProcessDetailScreen({
           {/* Aba: Tramitação */}
           {tab === "tramitacao" && (
             <>
-              <div style={{ display: "flex", gap: "6px", margin: "6px 0" }}>
+              <div className="tram-toolbar">
                 <button
-                  className="btn-summarize"
-                  style={{ flex: 1, fontSize: "11px", padding: "6px" }}
+                  className="btn-summarize btn-summarize--secondary"
                   onClick={generateTramitacao}
                   disabled={generatingTram}
                 >
@@ -648,13 +885,13 @@ function ProcessDetailScreen({
                 </button>
               </div>
               {waitingForSei && (
-                <div className="summary-loading" style={{ margin: "0 0 6px", display: "flex", alignItems: "center", gap: "6px" }}>
+                <div className="summary-loading summary-loading--inline">
                   <span className="tram-spinner" />
                   <span>Abra <strong>Consultar Andamento</strong> no SEI. O assistente vai extrair automaticamente.</span>
                 </div>
               )}
               {tramError && !waitingForSei && (
-                <div className="summary-error" style={{ margin: "0 0 6px" }}>
+                <div className="summary-error summary-error--inline">
                   <p>{tramError}</p>
                 </div>
               )}
@@ -743,13 +980,7 @@ function ProcessDetailScreen({
 
             {details.summary && !summarizing && (
               <div className="summary-content">
-                {details.summary.split("\n").map((line, i) => {
-                  if (line.startsWith("**") && line.endsWith("**")) {
-                    return <p key={i} className="summary-heading">{line.replace(/\*\*/g, "")}</p>;
-                  }
-                  if (line.trim() === "") return <br key={i} />;
-                  return <p key={i} className="summary-line">{line}</p>;
-                })}
+                {renderSummary(details.summary)}
                 <button className="btn-summarize btn-summarize--retry" onClick={generateSummary}>
                   ↺ Regenerar
                 </button>
@@ -869,7 +1100,7 @@ function ActiveScreen({ session }: { session: SessionInfo }) {
             <path d="M7 1L13 4V10L7 13L1 10V4L7 1Z" stroke="white" strokeWidth="1.5"/>
           </svg>
         </div>
-        <div style={{ flex: 1 }}>
+        <div className="sidebar-header-text">
           <p className="sidebar-title">SEI Assistant</p>
           <p className="sidebar-subtitle">TJPE</p>
         </div>

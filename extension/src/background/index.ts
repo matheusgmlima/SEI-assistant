@@ -8,7 +8,6 @@ import type { ExtMessage, SessionInfo, ProcessDetails } from "@shared/index";
 import {
   upsertProcesso,
   upsertDespacho,
-  replaceAndamentos,
   mergeAndamentos,
   getAndamentosByProcesso,
   needsSync,
@@ -42,57 +41,149 @@ async function clearSession() {
 // ─── IA ────────────────────────────────────────────────────────────────────────
 
 function buildPrompt(details: ProcessDetails): string {
-  const andamentoText =
-    details.andamento.length > 0
-      ? details.andamento
-          .slice(0, 8)
-          .map((a) => `• ${a.date} — ${a.description}${a.unit ? ` [${a.unit}]` : ""}`)
-          .join("\n")
-      : "Não disponível";
+  // Andamento completo — ordenado do mais recente ao mais antigo
+  const andamentoSorted = [...details.andamento].sort((a, b) => {
+    const da = a.date?.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+    const db = b.date?.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+    const ta = da ? new Date(`${da[3]}-${da[2]}-${da[1]}`).getTime() : 0;
+    const tb = db ? new Date(`${db[3]}-${db[2]}-${db[1]}`).getTime() : 0;
+    return tb - ta;
+  });
 
-  const despachos = details.documents.filter((d) => /despacho/i.test(d));
-  const outrosDocs = details.documents.filter((d) => !/despacho/i.test(d));
-  const outrosText = outrosDocs.length > 0 ? outrosDocs.slice(0, 15).join(", ") : "Nenhum";
+  // Status atual derivado do andamento mais recente
+  const ultimoAndamento = andamentoSorted[0];
+  const isConcluido = /conclus/i.test(ultimoAndamento?.description ?? "");
+  const isArquivado = /arquiv/i.test(ultimoAndamento?.description ?? "");
+  const statusAndamento = ultimoAndamento
+    ? `ÚLTIMA MOVIMENTAÇÃO (ESTADO ATUAL): ${ultimoAndamento.date} — "${ultimoAndamento.description}" — Unidade: ${ultimoAndamento.unit ?? "?"}`
+    : "Sem andamentos registrados";
+  const conclusaoAlert = isConcluido
+    ? `\n⚠️ ATENÇÃO: O processo foi CONCLUÍDO em ${ultimoAndamento?.date} na unidade ${ultimoAndamento?.unit ?? "?"}. Reflita isso no Status atual.`
+    : isArquivado
+    ? `\n⚠️ ATENÇÃO: O processo foi ARQUIVADO em ${ultimoAndamento?.date}. Reflita isso no Status atual.`
+    : "";
 
-  const despachosText = details.despachosContent && details.despachosContent.length > 50
-    ? details.despachosContent.slice(0, 6000)
-    : despachos.length > 0
-      ? despachos.join("\n")
-      : "Nenhum despacho identificado";
+  const andamentoText = andamentoSorted.length > 0
+    ? andamentoSorted
+        .slice(0, 40)
+        .map((a) => `• ${a.date} [${a.unit ?? "?"}] — ${a.description}`)
+        .join("\n")
+    : "Não disponível";
 
-  const hasRealContent = !!(details.despachosContent && details.despachosContent.length > 50);
+  const despachos = details.documents.filter((d) => /^despacho\s+\d+/i.test(d));
+  const outrosDocs = details.documents.filter((d) => !/^despacho\s+\d+/i.test(d));
 
-  return `Você é um analista jurídico do TJPE. Com base nos dados do processo SEI abaixo, explique o que é este processo e seu estado atual.
+  // Agrupa despachos por unidade para o prompt
+  const despachosPorUnidade: Record<string, string[]> = {};
+  for (const d of despachos) {
+    const m = d.match(/despacho\s+\d+\s+(.*)/i);
+    const unit = m?.[1]?.trim() ?? "Sem unidade";
+    if (!despachosPorUnidade[unit]) despachosPorUnidade[unit] = [];
+    despachosPorUnidade[unit].push(d);
+  }
+  const despachosPorUnidadeText = Object.entries(despachosPorUnidade)
+    .map(([unit, ds]) => `  ${unit} (${ds.length}): ${ds.map((d) => d.match(/\d{5,8}/)?.[0] ?? d).join(", ")}`)
+    .join("\n");
 
-NÚMERO: ${details.id}
+  // Conteúdo real de despachos lidos (filtra mensagens de restrição)
+  // Aumentado de 14k → 60k chars para acomodar processos com muitos despachos
+  // (Groq llama-3.3-70b suporta 128k tokens de contexto).
+  const hasRealContent = !!(details.despachosContent && details.despachosContent.length > 100);
+  const despachosContentText = hasRealContent
+    ? details.despachosContent!.slice(0, 60000)
+    : "";
+  const contentTruncated = hasRealContent && details.despachosContent!.length > 60000;
+
+  // Outros documentos relevantes (exclui genéricos)
+  const outrosRelevantes = outrosDocs
+    .filter((d) => !/^(I|II|III|IV|V|Aguarde)/i.test(d))
+    .slice(0, 30)
+    .join("\n  ");
+
+  // Extrai eventos-chave do andamento para destacar no prompt
+  const eventosChave = andamentoSorted
+    .filter((a) => /conclus|aprova|autoriza|negad|indeferid|arquiv|encerr|reaber|remetid|recebid/i.test(a.description))
+    .slice(0, 20)
+    .map((a) => `  • ${a.date} [${a.unit ?? "?"}] ${a.description}`)
+    .join("\n");
+
+  return `Você é um analista jurídico do TJPE. Analise este processo SEI e produza um resumo executivo preciso com foco na trajetória decisória.
+${conclusaoAlert}
+
+PROCESSO: ${details.id}
 TIPO: ${details.type ?? "Não identificado"}
 ESPECIFICAÇÃO: ${details.description ?? "Não disponível"}
 UNIDADE ATUAL: ${details.currentUnit ?? "Não disponível"}
 INTERESSADOS: ${details.parties.join(", ") || "Não identificado"}
 
-OUTROS DOCUMENTOS (${outrosDocs.length} total):
-${outrosText}
+━━━ ESTADO ATUAL DO PROCESSO ━━━
+${statusAndamento}
 
-DESPACHOS NO PROCESSO (${despachos.length} total — ${hasRealContent ? "CONTEÚDO COMPLETO" : "apenas títulos com unidade"}):
-${despachosText}
+━━━ DESPACHOS (${despachos.length} total — agrupados por unidade criadora) ━━━
+${despachosPorUnidadeText || "Nenhum"}
 
-ÚLTIMOS ANDAMENTOS REGISTRADOS:
+━━━ OUTROS DOCUMENTOS (${outrosDocs.length}) ━━━
+${outrosRelevantes || "Nenhum"}
+
+━━━ EVENTOS-CHAVE (aprovações, conclusões, negações, remessas) ━━━
+${eventosChave || "Nenhum evento-chave identificado"}
+
+━━━ HISTÓRICO COMPLETO (${details.andamento.length} registros — mais recentes primeiro) ━━━
 ${andamentoText}
+${andamentoSorted.length > 40 ? `... e mais ${andamentoSorted.length - 40} registros anteriores` : ""}
 
-${hasRealContent ? "Você possui o TEXTO COMPLETO dos despachos acima. Use-o para identificar o objeto, contratos, valores e decisões do processo." : "Os títulos dos despachos incluem a unidade responsável (ex: 'Despacho 3341475 UGP - BID'). Use isso para inferir o fluxo de tramitação."}
-Responda EXATAMENTE neste formato:
+${hasRealContent ? `━━━ CONTEÚDO DOS DOCUMENTOS LIDOS ━━━\nEXTRAIA DAQUI o objeto, valores, partes envolvidas, CNPJ, datas e decisões específicas. LEIA TUDO antes de responder.${contentTruncated ? "\n(Conteúdo truncado em 60KB — use os primeiros + últimos despachos como referência principal)" : ""}\n${despachosContentText}` : "NOTA: Conteúdo textual não disponível (acesso restrito). INFIRA o objeto e decisões a partir dos TÍTULOS dos despachos (que indicam unidade e ação) e do nome dos documentos (Termo de Referência, Contrato, Empenho, etc.)."}
 
+━━━ INSTRUÇÕES DE RESPOSTA ━━━
+
+Responda EXATAMENTE no formato abaixo, em português, sem preâmbulo. Cada seção tem regras próprias — siga-as à risca.
+
+REGRAS DE INFERÊNCIA (LEIA COM ATENÇÃO):
+• EXTRAIA AGRESSIVAMENTE do conteúdo dos documentos: nomes de empresas, CNPJs, valores em R$, datas (dd/mm/aaaa), números de contrato, modalidade de licitação, objeto contratual.
+• INFIRA quando estiver evidente pelo contexto: ex: presença de "Termo de Referência" + "Minuta Contratual" + "Empenho" → é uma CONTRATAÇÃO; presença de "Pregão Eletrônico" → modalidade Pregão; documento "Cronograma de desembolso" → contrato com pagamento parcelado.
+• Use TÍTULOS de despachos e documentos como pistas: "Despacho 1234 ASSESSORIA JURIDIC" + texto sobre análise jurídica → "Emitiu parecer técnico"; documento "Publicação EXTRATO" → "Publicou extrato no DOE".
+• Só escreva "não informado" se realmente não conseguir inferir do título OU conteúdo. Prefira uma descrição cautelosa ("contratação de serviços técnicos — detalhes nos documentos") a "não informado".
+• Para DATAS: extraia as datas dd/mm/aaaa que aparecem no conteúdo dos despachos. Se o andamento estiver vazio mas o despacho menciona "Em 15/03/2025, ...", use essa data.
+• O Status atual deve refletir o ESTADO ATUAL — derive do andamento se houver; se vazio, use a data do despacho/empenho mais recente.
+
+────────────────────────────────────────
 **Assunto**
-[O que é este processo — objeto, contrato, aquisição, etc. — em 1-3 linhas]
+Liste em formato chave: valor, uma por linha, prefixada por "• ". OMITA campos que realmente não conseguir preencher (não escreva "Não informado" — simplesmente pule a linha):
+• Objeto: [1 frase clara — ex: "Contratação de empresa de consultoria para gerência de projetos do BID", "Aquisição de mobiliário", "Apuração disciplinar"]
+• Modalidade/Categoria: [Pregão Eletrônico nº NN/AAAA, Adesão a ARP, Dispensa, Inexigibilidade, Contratação direta — INFIRA pelo tipo do processo e documentos]
+• Valor estimado: [R$ X.XXX,XX]
+• Fornecedor/Contratado: [nome da empresa + CNPJ se disponível]
+• Interessados: [partes do processo se diferentes do fornecedor — pule se redundante]
+• Vigência/Prazo: [datas ou duração — ex: "12 meses a partir de dd/mm/aaaa"]
+• Origem: [unidade demandante + data de abertura]
+• Observações: [1 linha SE houver algo crítico não capturado acima — ex: aditivos, glosa, recurso pendente]
 
-**Tramitação**
-[Como o processo evoluiu com base nos despachos e unidades envolvidas]
+────────────────────────────────────────
+**Caminhada do processo**
+Liste cronologicamente (mais antigo → mais recente) os PONTOS DE DECISÃO. Use EXATAMENTE este formato:
+→ dd/mm/aaaa [UNIDADE]: ação concreta (cite nº do despacho/doc quando aplicável)
 
+REGRAS PARA DATAS:
+• Use datas do andamento histórico se disponível.
+• Se o andamento estiver vazio, EXTRAIA datas do conteúdo dos despachos (procure padrões dd/mm/aaaa no texto).
+• Se realmente não tiver data, use "[s/d]" em vez de "não informado". Ex: → [s/d] [UGP - BID]: Emitiu DFD 3347371.
+
+INCLUA APENAS eventos com substância (máximo 8 linhas, condense repetições):
+• Abertura, instauração, autuação
+• Pareceres jurídicos / técnicos (favoráveis ou contrários)
+• Autorizações, ratificações, homologações, adjudicações
+• Publicações (DOE, DJE) — cite extrato/edital
+• Empenhos, assinaturas de contrato, ordens de serviço
+• Negações, indeferimentos, devoluções
+• Conclusões, arquivamentos
+
+────────────────────────────────────────
 **Status atual**
-[Onde está agora e o que está pendente]
+1 linha: "[Estado] em dd/mm/aaaa na [UNIDADE] — [última ação relevante]". Estados: Em análise / Aguardando parecer / Aguardando assinatura / Em execução / Concluído / Arquivado / Sobrestado / Devolvido. Se a data não estiver disponível, omita "em dd/mm/aaaa".
 
+────────────────────────────────────────
 **Próxima ação sugerida**
-[O que provavelmente precisa ser feito]`;
+1-2 frases com ação CONCRETA. Não sugira nada se o processo está concluído/arquivado (escreva "Nenhuma — processo concluído").`;
 }
 
 async function callAi(config: AiConfig, prompt: string): Promise<string> {
@@ -111,8 +202,8 @@ async function callAi(config: AiConfig, prompt: string): Promise<string> {
         },
         { role: "user", content: prompt },
       ],
-      max_tokens: 900,
-      temperature: 0.2,
+      max_tokens: 2600,
+      temperature: 0.15,
     }),
   });
 
@@ -127,110 +218,10 @@ async function callAi(config: AiConfig, prompt: string): Promise<string> {
   return content;
 }
 
-// ─── Fetch individual de despachos ─────────────────────────────────────────────
-// O background tem host_permissions para sei.cloud.tjpe.jus.br e pode fazer
-// fetch com credentials: "include", usando os cookies de sessão do usuário.
-
-interface InfraParams {
-  origin: string;
-  pathname: string;
-  infra_hash: string | null;
-  infra_sistema: string;
-  infra_unidade_atual: string;
-}
-
-function extractDocumentId(title: string): string | null {
-  const match = title.match(/\b(\d{5,8})\b/);
-  return match?.[1] ?? null;
-}
-
-function buildDocUrl(params: InfraParams, docId: string): string {
-  // Nunca inclui infra_hash — ele é de uso único e causa logout se reutilizado
-  const base = params.origin + params.pathname;
-  const qs = new URLSearchParams({
-    acao: "documento_visualizar",
-    id_documento: docId,
-    infra_sistema: params.infra_sistema,
-    infra_unidade_atual: params.infra_unidade_atual,
-  });
-  return `${base}?${qs.toString()}`;
-}
-
-function htmlToText(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-async function fetchOneDoc(url: string): Promise<string> {
-  const res = await fetch(url, { credentials: "include" });
-  if (!res.ok) return "";
-  const html = await res.text();
-
-  // Extrai apenas o corpo do documento SEI, se disponível
-  const bodyMatch = html.match(/<div[^>]+id=["']divConteudoVisualizacaoInterna["'][^>]*>([\s\S]*?)<\/div>/i);
-  const raw = bodyMatch?.[1] ?? html;
-  const text = htmlToText(raw);
-
-  // Se o resultado parece ser uma página de login/erro (sem conteúdo útil), descarta
-  if (text.length < 30 || /login|senha|acesso negado/i.test(text.slice(0, 200))) return "";
-  return text;
-}
-
-async function fetchDespachosContent(
-  despachoTitles: string[],
-  documentLinks: Record<string, string>,
-  fallbackParams: InfraParams | undefined
-): Promise<string> {
-  const results: string[] = [];
-  let fetched = 0;
-
-  for (const title of despachoTitles) {
-    if (fetched >= 10) break; // limita a 10 despachos para não sobrecarregar
-
-    try {
-      // Tenta URL direta capturada do DOM
-      let url = documentLinks[title];
-
-      // Fallback: tenta pela base do título sem badge (ex: "Despacho 3341475 UGP-BID" → id 3341475)
-      if (!url) {
-        // Procura chave sem badge
-        const docId = extractDocumentId(title);
-        if (docId) {
-          const altKey = Object.keys(documentLinks).find((k) => k.includes(docId));
-          if (altKey) url = documentLinks[altKey];
-        }
-      }
-
-      // Fallback: constrói URL via template (hash de documento_visualizar recente)
-      if (!url && fallbackParams) {
-        const docId = extractDocumentId(title);
-        if (docId) url = buildDocUrl(fallbackParams, docId);
-      }
-
-      if (!url) continue;
-
-      const text = await fetchOneDoc(url);
-      if (text.length > 20) {
-        results.push(`=== ${title} ===\n${text.slice(0, 1500)}`);
-        fetched++;
-        console.log(`[SEI Assistant] Despacho "${title.slice(0, 40)}" lido (${text.length} chars)`);
-      }
-    } catch {
-      // ignora erros individuais
-    }
-  }
-
-  console.log(`[SEI Assistant] Despachos lidos: ${fetched}/${despachoTitles.length}`);
-  return results.join("\n\n");
-}
+// NOTA: o fetch direto via background (com cookies de sessão) foi removido —
+// reusar `infra_hash` causa logout por invalidação CSRF do SEI. Toda extração
+// de conteúdo de documento agora é feita pelo content script via clique no DOM,
+// que reaproveita a sessão sem violar o token.
 
 // ─── Sync para IndexedDB ───────────────────────────────────────────────────────
 
@@ -289,66 +280,11 @@ async function syncProcessoToDB(details: ProcessDetails): Promise<void> {
   }
 }
 
-// ─── Parser de andamento a partir do HTML do histórico ────────────────────────
-
-function parseAndamentoHtml(html: string): import("@shared/index").AndamentoEntry[] {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(html, "text/html");
-
-  // Tenta #tblHistorico primeiro (padrão SEI/TJPE — confirmado pelo bot Selenium)
-  let table: Element | null = doc.querySelector("#tblHistorico");
-
-  if (!table) {
-    for (const t of doc.querySelectorAll("table")) {
-      const thEls   = Array.from(t.querySelectorAll("th"));
-      const firstTd = Array.from(t.querySelectorAll("tr:first-child td"));
-      const cands   = thEls.length > 0 ? thEls : firstTd;
-      const texts   = cands.map((c) => c.textContent?.toLowerCase() ?? "");
-      if (texts.some((h) => h.includes("data")) && texts.some((h) => h.includes("unidade"))) {
-        table = t; break;
-      }
-    }
-  }
-  if (!table) return [];
-
-  const thEls     = Array.from(table.querySelectorAll("th"));
-  const headerEls = thEls.length > 0 ? thEls : Array.from(table.querySelectorAll("tr:first-child td"));
-  const headers   = headerEls.map((el) => el.textContent?.toLowerCase().trim() ?? "");
-
-  // Colunas do TJPE: 0=Data/Hora, 1=Unidade, 2=Usuário, 3=Descrição
-  const di   = Math.max(0, headers.findIndex((h) => h.includes("data")));
-  const uIdx = headers.findIndex((h) => h.includes("unidade")) >= 0
-    ? headers.findIndex((h) => h.includes("unidade")) : 1;
-  const xIdx = headers.findIndex((h) => h.includes("descri") || h.includes("movimento"));
-  const dIdx = xIdx >= 0 ? xIdx : (headers.length >= 4 ? 3 : 1);
-
-  const entries: import("@shared/index").AndamentoEntry[] = [];
-  Array.from(table.querySelectorAll("tr")).slice(1).forEach((row) => {
-    const cells = row.querySelectorAll("td");
-    if (cells.length < 2) return;
-    const date        = cells[di]?.textContent?.replace(/\s+/g, " ").trim() ?? "";
-    const unit        = cells[uIdx]?.textContent?.replace(/\s+/g, " ").trim() ?? "";
-    const description = cells[dIdx]?.textContent?.replace(/\s+/g, " ").trim() ?? "";
-    if (date || description) entries.push({ date, unit, description });
-  });
-  console.log(`[SEI Assistant] parseAndamentoHtml: ${entries.length} registros`);
-  return entries;
-}
-
-// Extrai URL da próxima página de paginação do histórico
-function extractNextPageUrl(html: string, baseUrl: string): string | null {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(html, "text/html");
-  const link = doc.querySelector<HTMLAnchorElement>("#lnkInfraProximaPaginaSuperior, #lnkInfraProximaPaginaInferior");
-  if (!link) return null;
-  const href = link.getAttribute("href") ?? "";
-  if (!href || href === "#") return null;
-  try {
-    return new URL(href, baseUrl).toString();
-  } catch {
-    return null;
-  }
-}
+// NOTA: parser de andamento (parseAndamentoHtml) e extrator de próxima página
+// (extractNextPageUrl) foram removidos — esses parsers só seriam usados se o
+// background fizesse fetch HTTP direto, o que não fazemos (causa logout).
+// A extração de andamento agora roda no content script (extractAndamento) e
+// a paginação automática também (findNextPageLink).
 
 // ─── Listener de mensagens ──────────────────────────────────────────────────────
 
@@ -444,6 +380,65 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, _sender, sendResponse
       needsSync(processId, ultimoDocTitulo)
         .then((needs) => sendResponse({ ok: true, needsSync: needs }))
         .catch(() => sendResponse({ ok: true, needsSync: true }));
+      return true;
+    }
+
+    // Coleta completa finalizada pelo content script → dispara IA automaticamente
+    case "COLLECTION_DONE": {
+      const { processId } = message.payload as { processId: string };
+      const storageKey = `proc_${processId}`;
+
+      chrome.storage.local.get(["aiConfig", storageKey], async (result) => {
+        const config = result.aiConfig as AiConfig | undefined;
+        const details = result[storageKey] as ProcessDetails | undefined;
+
+        if (!config?.apiKey || !details) {
+          chrome.storage.local.set({
+            [`collecting_${processId}`]: {
+              processId, status: "done", phase: "Concluído (sem chave de IA configurada)",
+              step: 4, totalSteps: 4, startedAt: Date.now(),
+            },
+          });
+          sendResponse({ ok: true });
+          return;
+        }
+
+        try {
+          // Merge andamento do DB com storage — garante dados completos para a IA
+          const dbRows = await getAndamentosByProcesso(processId);
+          const dbAndamento = dbRows.map((r) => ({
+            date: r.data, unit: r.unidade, description: r.descricao,
+          }));
+
+          // Dedup por data+unidade+descrição
+          const seen = new Set(details.andamento.map((e) => `${e.date}|${e.unit}|${e.description}`));
+          const extra = dbAndamento.filter((e) => !seen.has(`${e.date}|${e.unit}|${e.description}`));
+          const fullAndamento = [...details.andamento, ...extra];
+
+          const detailsWithFullAndamento: ProcessDetails = { ...details, andamento: fullAndamento };
+
+          const summary = await callAi(config, buildPrompt(detailsWithFullAndamento));
+          const updated: ProcessDetails = { ...detailsWithFullAndamento, summary };
+          await chrome.storage.local.set({ [storageKey]: updated });
+          await syncProcessoToDB(updated);
+
+          chrome.storage.local.set({
+            [`collecting_${processId}`]: {
+              processId, status: "done", phase: "Concluído!", step: 4, totalSteps: 4, startedAt: Date.now(),
+            },
+          });
+          sendResponse({ ok: true });
+        } catch (e) {
+          chrome.storage.local.set({
+            [`collecting_${processId}`]: {
+              processId, status: "error", phase: "Erro ao gerar resumo.",
+              step: 4, totalSteps: 4, startedAt: Date.now(), error: String(e),
+            },
+          });
+          sendResponse({ ok: false, error: String(e) });
+        }
+      });
+
       return true;
     }
 

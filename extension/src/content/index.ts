@@ -21,6 +21,14 @@ function safeStorageSet(data: Record<string, unknown>) {
   catch (e) { if (!String(e).includes("context invalidated")) console.error(e); }
 }
 
+/** Wrapper Promise-based para chrome.storage.local.get com tipagem estável.
+ *  Evita o problema de inferência de generic quando se usa template literals. */
+function storageGet(key: string | string[] | null): Promise<Record<string, unknown>> {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(key as string, (r) => resolve(r as Record<string, unknown>));
+  });
+}
+
 // ─── Constantes ────────────────────────────────────────────────────────────────
 
 const AUTHENTICATED_ACTIONS = [
@@ -199,6 +207,25 @@ function extractDocumentsFromTree(): { titles: string[]; links: Record<string, s
       !/^Aguarde/i.test(text) &&
       !seen.has(text)
     ) {
+      // Dedup por docId numérico (5-8 dígitos) — evita "Despacho 1234" e "Despacho 1234 UNIDADE" duplicados
+      const docIdMatch = text.match(/\b(\d{5,8})\b/);
+      if (docIdMatch) {
+        const docId = docIdMatch[1];
+        if (seenDocIds.has(docId)) {
+          // Já existe — substitui se o novo tem mais informação (texto mais longo)
+          const existingIdx = titles.findIndex((t) => t.includes(docId));
+          if (existingIdx >= 0 && text.length > titles[existingIdx].length) {
+            seen.delete(titles[existingIdx]);
+            titles[existingIdx] = text;
+            seen.add(text);
+            const anchor = (el.tagName === "A" ? el : el.querySelector("a")) as HTMLAnchorElement | null;
+            captureLink(text, anchor);
+          }
+          return;
+        }
+        seenDocIds.add(docId);
+      }
+
       seen.add(text);
       titles.push(text);
       const anchor = (el.tagName === "A" ? el : el.querySelector("a")) as HTMLAnchorElement | null;
@@ -367,29 +394,125 @@ let detailDebounce: ReturnType<typeof setTimeout> | null = null;
 // Guarda processos já expandidos nesta sessão — evita loop infinito
 const autoExpandedProcesses = new Set<string>();
 
+// ─── Auto-clique em "Consultar Andamento" ─────────────────────────────────────
+// Simula o clique do usuário para abrir o histórico automaticamente.
+// Seguro: usa .click() no DOM, não faz fetch HTTP, não invalida sessão.
+
+const autoAndamentoOpened = new Set<string>();
+
+function findAndamentoButton(): HTMLElement | null {
+  // Busca em múltiplos contextos: frame atual + iframes filhos
+  const docs: Document[] = [document];
+  try {
+    const outer = document.querySelector<HTMLIFrameElement>("#ifrConteudoVisualizacao");
+    if (outer?.contentDocument) docs.push(outer.contentDocument);
+  } catch { /* cross-origin */ }
+
+  const SELECTORS = [
+    'a[href*="historico_processo_exibir"]',
+    'a[onclick*="historico_processo_exibir"]',
+    'img[alt*="Consultar Andamento"]',
+    'img[title*="Consultar Andamento"]',
+    'a[title*="Consultar Andamento"]',
+    'a[title*="Histórico do Processo"]',
+    'img[alt*="Hist"]',
+  ];
+
+  for (const doc of docs) {
+    // 1. Seletores diretos
+    for (const sel of SELECTORS) {
+      const el = doc.querySelector<HTMLElement>(sel);
+      if (el) return el.tagName === "A" ? el : (el.closest("a") as HTMLElement | null) ?? el;
+    }
+
+    // 2. Qualquer link cujo texto/title contenha "andamento" ou "histórico"
+    for (const a of doc.querySelectorAll<HTMLAnchorElement>("a")) {
+      const text  = (a.textContent ?? "").trim();
+      const title = a.getAttribute("title") ?? "";
+      const href  = a.getAttribute("href") ?? "";
+      const click = a.getAttribute("onclick") ?? "";
+      if (/consultar\s*andamento|hist.rico\s*do\s*processo/i.test(text + title + href + click)) {
+        return a;
+      }
+    }
+  }
+
+  return null;
+}
+
+function tryAutoOpenAndamento(processId: string) {
+  if (!isTopFrame) return;                          // só no frame principal
+  if (autoAndamentoOpened.has(processId)) return;   // já abriu nesta sessão
+
+  const action = getActionFromUrl(window.location.href);
+  if (!["procedimento_trabalhar", "arvore_visualizar", "procedimento_visualizar"].includes(action ?? "")) return;
+
+  // Só abre se ainda não temos andamento salvo
+  chrome.storage.local.get(`proc_${processId}`, (result) => {
+    if (!isContextValid()) return;
+    const existing = result[`proc_${processId}`] as { andamento?: unknown[] } | undefined;
+    if ((existing?.andamento?.length ?? 0) > 0) return; // já tem dados
+
+    // Aguarda 1.5s para garantir que a toolbar do SEI carregou
+    setTimeout(() => {
+      if (!isContextValid()) return;
+      const btn = findAndamentoButton();
+      if (btn) {
+        autoAndamentoOpened.add(processId);
+        console.log(`[SEI Assistant] Auto-abrindo "Consultar Andamento" para ${processId}`);
+        try { btn.click(); } catch (e) { console.warn("[SEI Assistant] Clique falhou:", e); }
+      } else {
+        console.log(`[SEI Assistant] Botão "Consultar Andamento" não encontrado para ${processId}`);
+      }
+    }, 1500);
+  });
+}
+
 // ─── Auto-expand pastas da árvore ─────────────────────────────────────────────
-// Clica em todos os nós colapsados (ícone "mais") para revelar os documentos
+// Clica em todos os nós colapsados para revelar os documentos.
+// Busca em TODOS os frames acessíveis (same-origin).
 function tryAutoExpandTree(): number {
   let expanded = 0;
 
-  // Estratégia 1: imagens com "mais" ou "mais" na src (padrão InfraTree)
-  document.querySelectorAll<HTMLImageElement>('img[src*="mais"], img[src*="img_mais"], img[alt="+"]').forEach((img) => {
-    const a = img.closest<HTMLAnchorElement>("a");
-    if (a) { try { a.click(); expanded++; } catch { /* ignora */ } }
-  });
+  for (const doc of getAllAccessibleDocs()) {
+    try {
+      // Estratégia 1: imagens de "expandir/mais" dentro de âncoras
+      doc.querySelectorAll<HTMLImageElement>(
+        'img[src*="mais"], img[src*="expandir"], img[src*="img_mais"], img[alt="+"], img[title*="Expandir"]'
+      ).forEach((img) => {
+        const a = img.closest<HTMLAnchorElement>("a");
+        if (a) { try { a.click(); expanded++; } catch { /* ignora */ } }
+      });
 
-  // Estratégia 2: links com onclick contendo "Abrir" ou "Expandir"
-  if (expanded === 0) {
-    document.querySelectorAll<HTMLAnchorElement>('a[onclick*="Abrir"], a[onclick*="abrir"], a[onclick*="expand"]').forEach((a) => {
-      // Só clica se parece nó colapsado (ainda não tem filhos visíveis)
-      const parent = a.closest("span, div");
-      const sibling = parent?.nextElementSibling;
-      const isCollapsed = !sibling || (sibling as HTMLElement).style?.display === "none";
-      if (isCollapsed) { try { a.click(); expanded++; } catch { /* ignora */ } }
-    });
+      // Estratégia 2: links com onclick de expansão da InfraArvore
+      doc.querySelectorAll<HTMLAnchorElement>(
+        'a[onclick*="Abrir"], a[onclick*="abrir"], a[onclick*="expand"], a[onclick*="Expand"], a[onclick*="infraArvore"]'
+      ).forEach((a) => {
+        const parent = a.closest("span, div, li");
+        const sibling = parent?.nextElementSibling as HTMLElement | null;
+        const isCollapsed = !sibling || sibling.style?.display === "none" || sibling.childElementCount === 0;
+        if (isCollapsed) { try { a.click(); expanded++; } catch { /* ignora */ } }
+      });
+
+      // Estratégia 3: ícones de pasta colapsada pelo src (padrão TJPE)
+      doc.querySelectorAll<HTMLImageElement>(
+        'img[src*="pasta_fechada"], img[src*="folder_closed"], img[src*="collapsed"]'
+      ).forEach((img) => {
+        const a = img.closest<HTMLAnchorElement>("a");
+        if (a) { try { a.click(); expanded++; } catch { /* ignora */ } }
+      });
+
+      // Estratégia 4: elementos da InfraArvore com estado colapsado
+      doc.querySelectorAll<HTMLElement>("[id*='divInfra'][style*='display: none'], [id*='divInfra'][style*='display:none']")
+        .forEach((el) => {
+          const parentId = el.id.replace("divInfra", "");
+          const trigger = doc.querySelector<HTMLElement>(`a[onclick*="${parentId}"], a[href*="${parentId}"]`);
+          if (trigger) { try { trigger.click(); expanded++; } catch { /* ignora */ } }
+        });
+    } catch { /* frame inacessível */ }
   }
 
-  if (expanded > 0) console.log(`[SEI Assistant] Auto-expandiu ${expanded} pasta(s) da árvore`);
+  if (expanded > 0) console.log(`[SEI Assistant] Auto-expandiu ${expanded} nó(s) da árvore`);
   return expanded;
 }
 
@@ -411,6 +534,7 @@ function startTreePoller(processId: string) {
       treePollerAttempts = 0;
       if (docs > 0) {
         doExtractAndSave(processId);
+        tryAutoOpenAndamento(processId);
         if (!autoExpandedProcesses.has(processId)) {
           autoExpandedProcesses.add(processId);
           const expanded = tryAutoExpandTree();
@@ -452,17 +576,66 @@ function doExtractAndSave(id: string) {
 
     if (!hasRichData && existing.extractedAt && (existing.documents?.length ?? 0) > 0) return;
 
-    const finalDocs = documents.length > 0 ? documents : (existing.documents ?? []);
+    // ── Documentos: MERGE aditivo, nunca substitui ─────────────────────────────
+    // O SEI só renderiza docs da pasta aberta; se replaçássemos a lista, perderíamos
+    // tudo que já estava cacheado. Aqui: preserva existentes, adiciona novos (por docId
+    // ou título exato), e atualiza títulos quando a nova versão tem mais info (badge de unidade).
+    const existingDocs = existing.documents ?? [];
+
+    // Indexa existentes por docId (5-8 dígitos) E por título exato
+    const existingByDocId = new Map<string, { title: string; idx: number }>();
+    const existingByTitle = new Set<string>(existingDocs);
+    existingDocs.forEach((t, idx) => {
+      const m = t.match(/\b(\d{5,8})\b/);
+      if (m) existingByDocId.set(m[1], { title: t, idx });
+    });
+
+    const mergedDocs = [...existingDocs];
+    let addedCount = 0;
+    let upgradedCount = 0;
+
+    for (const newTitle of documents) {
+      const m = newTitle.match(/\b(\d{5,8})\b/);
+      if (m) {
+        const docId = m[1];
+        const found = existingByDocId.get(docId);
+        if (found) {
+          // Já existe — só substitui se a nova versão tem MAIS info (texto mais longo,
+          // ex: ganhou badge de unidade que antes não tinha)
+          if (newTitle.length > found.title.length && newTitle !== found.title) {
+            mergedDocs[found.idx] = newTitle;
+            existingByTitle.delete(found.title);
+            existingByTitle.add(newTitle);
+            existingByDocId.set(docId, { title: newTitle, idx: found.idx });
+            upgradedCount++;
+          }
+        } else {
+          // Novo doc — adiciona
+          mergedDocs.push(newTitle);
+          existingByTitle.add(newTitle);
+          existingByDocId.set(docId, { title: newTitle, idx: mergedDocs.length - 1 });
+          addedCount++;
+        }
+      } else if (!existingByTitle.has(newTitle)) {
+        // Sem docId numérico (raro: títulos como "I", "II") — dedup por texto exato
+        mergedDocs.push(newTitle);
+        existingByTitle.add(newTitle);
+        addedCount++;
+      }
+    }
+
+    if (documents.length > 0) {
+      console.log(
+        `[SEI Assistant] Docs merged: +${addedCount} novos, ${upgradedCount} atualizados | total ${mergedDocs.length} (extração atual: ${documents.length})`
+      );
+    }
+
+    const finalDocs = mergedDocs;
     // Merge links: novos sobrescrevem os existentes
     const finalLinks = { ...(existing.documentLinks ?? {}), ...docLinks };
 
-    // Invalida cache se os documentos mudaram (quantidade OU conteúdo do primeiro item)
-    const existingFirst = existing.documents?.[0] ?? "";
-    const newFirst = finalDocs[0] ?? "";
-    const docsChanged = documents.length > 0 && (
-      documents.length !== (existing.documents?.length ?? 0) ||
-      newFirst !== existingFirst
-    );
+    // Invalida cache do summary APENAS quando há docs realmente novos (não cobertos antes)
+    const docsChanged = addedCount > 0;
 
     // ── Andamento: merge incremental quando na página de histórico ────────────────
     // Cada "Próxima Página" traz novos registros — acumula em vez de substituir
@@ -493,7 +666,8 @@ function doExtractAndSave(id: string) {
       andamento: finalAndamento,
       extractedAt: Date.now(),
       summary: docsChanged ? null : (existing.summary ?? null),
-      despachosContent: docsChanged ? null : (existing.despachosContent ?? null),
+      // Preserva despachosContent — só limpa se solicitado explicitamente via runFullCollection
+      despachosContent: existing.despachosContent ?? null,
     };
 
     // Salva mapeamento processNumber → id_procedimento (numérico interno do SEI)
@@ -504,6 +678,11 @@ function doExtractAndSave(id: string) {
 
     safeStorageSet({ [storageKey]: updated });
     console.log(`[SEI Assistant] Detalhes salvos para processo ${id}`, updated);
+
+    // Tenta abrir "Consultar Andamento" automaticamente se ainda não temos andamento
+    if (finalAndamento.length === 0) {
+      tryAutoOpenAndamento(id);
+    }
 
     // ── Paginação automática do histórico ─────────────────────────────────────────
     // Se há próxima página, clica automaticamente → dispara nova extração ao carregar
@@ -611,6 +790,412 @@ function tryExtractAndSaveDetails() {
   }, 600);
 }
 
+// ─── Coleta completa guiada ───────────────────────────────────────────────────
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function setCollectionProgress(
+  processId: string,
+  phase: string,
+  step: number,
+  totalSteps: number,
+  status: "running" | "done" | "error" = "running",
+  error?: string
+) {
+  safeStorageSet({
+    [`collecting_${processId}`]: { processId, status, phase, step, totalSteps, startedAt: Date.now(), error },
+  });
+}
+
+/** Checa se o usuário cancelou a coleta via UI (flag em storage). */
+async function isCancelled(processId: string): Promise<boolean> {
+  if (!isContextValid()) return true;
+  try {
+    const r = await storageGet(`cancelCollection_${processId}`);
+    return !!r[`cancelCollection_${processId}`];
+  } catch {
+    return true;
+  }
+}
+
+/** Sleep que retorna true se foi cancelado durante a espera. */
+async function sleepCancellable(ms: number, processId: string): Promise<boolean> {
+  const step = 200;
+  let elapsed = 0;
+  while (elapsed < ms) {
+    await sleep(Math.min(step, ms - elapsed));
+    elapsed += step;
+    if (await isCancelled(processId)) return true;
+  }
+  return false;
+}
+
+/** Coleta todos os Documents acessíveis (same-origin) do frame atual e filhos */
+function getAllAccessibleDocs(): Document[] {
+  const docs: Document[] = [document];
+
+  function crawl(win: Window) {
+    try {
+      for (let i = 0; i < win.frames.length; i++) {
+        try {
+          const child = win.frames[i] as Window;
+          const childDoc = child.document;
+          if (childDoc && !docs.includes(childDoc)) {
+            docs.push(childDoc);
+            crawl(child); // recursivo para iframes aninhados
+          }
+        } catch { /* cross-origin — ignora */ }
+      }
+    } catch { /* ignora */ }
+  }
+
+  crawl(window);
+  return docs;
+}
+
+/** Clica no link de um despacho na árvore — tenta múltiplas estratégias */
+function clickDespachoInTree(docId: string, titleHint = ""): boolean {
+  for (const doc of getAllAccessibleDocs()) {
+    try {
+      const anchors = Array.from(doc.querySelectorAll<HTMLAnchorElement>("a"));
+
+      // Estratégia 1: href ou onclick contém id_documento=DOCID
+      for (const a of anchors) {
+        const attrs = Array.from(a.attributes).map((x) => x.value).join(" ");
+        if (attrs.includes(`id_documento=${docId}`)) {
+          a.click();
+          console.log(`[SEI Assistant] ✓ Clicou despacho ${docId} (estratégia 1)`);
+          return true;
+        }
+      }
+
+      // Estratégia 2: qualquer atributo contém o docId isolado (onclick com função JS)
+      for (const a of anchors) {
+        const attrs = Array.from(a.attributes).map((x) => x.value).join(" ");
+        if (new RegExp(`(?<![0-9])${docId}(?![0-9])`).test(attrs)) {
+          a.click();
+          console.log(`[SEI Assistant] ✓ Clicou despacho ${docId} (estratégia 2)`);
+          return true;
+        }
+      }
+
+      // Estratégia 3: .infraArvoreNo cujo texto inclui o docId
+      for (const node of doc.querySelectorAll(".infraArvoreNo")) {
+        if ((node.textContent ?? "").includes(docId)) {
+          const anchor = node.closest<HTMLAnchorElement>("a") ?? node.querySelector<HTMLAnchorElement>("a");
+          if (anchor) { anchor.click(); console.log(`[SEI Assistant] ✓ Clicou despacho ${docId} (estratégia 3a)`); return true; }
+          (node as HTMLElement).click();
+          console.log(`[SEI Assistant] ✓ Clicou despacho ${docId} (estratégia 3b)`);
+          return true;
+        }
+      }
+
+      // Estratégia 4: texto do link contém docId ou início do título
+      const hint = titleHint ? titleHint.replace(/despacho\s+\d+\s*/i, "").slice(0, 15).toLowerCase() : "";
+      for (const a of anchors) {
+        const text = (a.textContent ?? "").toLowerCase();
+        if (text.includes(docId) || (hint.length > 4 && text.includes(hint))) {
+          a.click();
+          console.log(`[SEI Assistant] ✓ Clicou despacho ${docId} (estratégia 4)`);
+          return true;
+        }
+      }
+    } catch { /* ignora frame */ }
+  }
+  console.warn(`[SEI Assistant] ✗ Link do despacho ${docId} não encontrado`);
+  return false;
+}
+
+const RESTRICTED_PATTERNS = [
+  /processo aberto somente na unidade/i,
+  /documento restrito/i,
+  /acesso negado/i,
+  /sem permissão/i,
+  /você não tem permissão/i,
+];
+
+function isRestrictedContent(text: string): boolean {
+  return RESTRICTED_PATTERNS.some((p) => p.test(text.slice(0, 200)));
+}
+
+/** Verifica se um despacho está marcado como restrito na árvore (ícone vermelho cortado) */
+function isDocRestrictedInTree(docId: string): boolean {
+  for (const doc of getAllAccessibleDocs()) {
+    try {
+      for (const a of doc.querySelectorAll<HTMLAnchorElement>("a")) {
+        const attrs = Array.from(a.attributes).map((x) => x.value).join(" ");
+        if (!new RegExp(`(?<![0-9])${docId}(?![0-9])`).test(attrs)) continue;
+
+        // Verifica ícone de restrição: img com src "restrito", "bloqueado", "cancelado", cor vermelha
+        const parent = a.closest("span, div, li, td") ?? a.parentElement;
+        const imgs = parent?.querySelectorAll<HTMLImageElement>("img") ?? [];
+        for (const img of imgs) {
+          const src = (img.src ?? "").toLowerCase();
+          if (/restrit|bloqueado|cancelado|proibid|naopermit|cadeado|lock/i.test(src)) return true;
+        }
+
+        // Verifica classe CSS de restrição no link ou elemento pai
+        const fullClass = [a.className, parent?.className ?? ""].join(" ").toLowerCase();
+        if (/restrit|bloqueado|sem.?permiss/i.test(fullClass)) return true;
+
+        return false; // encontrou o link mas sem restrição
+      }
+    } catch { /* ignora */ }
+  }
+  return false;
+}
+
+/**
+ * Aguarda conteúdo do documento via storage.
+ * O content script rodando no frame do documento salva em docContent_${docId}.
+ * Mais confiável que tentar acessar o iframe diretamente (evita problemas cross-frame).
+ */
+async function waitForDespachoContent(docId: string, timeoutMs = 8000): Promise<string> {
+  const key = `docContent_${docId}`;
+  try { chrome.storage.local.remove(key); } catch { return ""; }
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await sleep(500);
+    if (!isContextValid()) return "";
+
+    try {
+      // 1. Verifica storage (set por trySaveDocContent no frame filho)
+      const result = await storageGet(key);
+      const stored = result[key] as string | undefined;
+      if (stored && stored.length > 50) {
+        chrome.storage.local.remove(key);
+        return stored;
+      }
+
+      // 2. Tenta extrair diretamente dos frames acessíveis do top-frame
+      const direct = extractDocContentFromAllFrames(docId);
+      if (direct.length > 50) return direct;
+    } catch {
+      // Contexto invalidado durante a espera
+      return "";
+    }
+  }
+  return "";
+}
+
+async function runFullCollection(processId: string) {
+  if (!isTopFrame) return;
+  const TOTAL = 4;
+
+  // Limpa qualquer flag de cancelamento residual antes de começar
+  try { chrome.storage.local.remove(`cancelCollection_${processId}`); } catch { /* ignora */ }
+
+  const checkCancel = async (): Promise<boolean> => {
+    if (await isCancelled(processId)) {
+      console.log(`[SEI Assistant] Coleta cancelada pelo usuário (${processId})`);
+      setCollectionProgress(processId, "Coleta cancelada pelo usuário.", 0, TOTAL, "error", "Cancelado");
+      chrome.storage.local.remove(`cancelCollection_${processId}`);
+      return true;
+    }
+    return false;
+  };
+
+  try {
+    // ── Passo 1: Expandir árvore (múltiplas rodadas para árvores profundas) ──────
+    setCollectionProgress(processId, "Expandindo árvore de documentos…", 1, TOTAL);
+    let totalExpanded = 0;
+    for (let round = 0; round < 4; round++) {
+      if (await checkCancel()) return;
+      const n = tryAutoExpandTree();
+      totalExpanded += n;
+      if (n === 0) break;           // nada mais para expandir
+      if (await sleepCancellable(2000, processId)) { await checkCancel(); return; }
+    }
+    console.log(`[SEI Assistant] Expansão concluída: ${totalExpanded} nó(s) total`);
+    if (await sleepCancellable(500, processId)) { await checkCancel(); return; }
+    doExtractAndSave(processId);    // re-extrai com árvore completa
+    if (await sleepCancellable(800, processId)) { await checkCancel(); return; }
+
+    // ── Passo 2: Abrir Consultar Andamento + paginar ──────────────────────────
+    setCollectionProgress(processId, "Coletando histórico de tramitação…", 2, TOTAL);
+    autoAndamentoOpened.delete(processId);
+    const andBtn = findAndamentoButton();
+    if (andBtn) {
+      andBtn.click();
+      // Espera adaptativa: monitora storage até o andamento estabilizar
+      // (paginação automática vai adicionando linhas; quando para de crescer por 3s, completou)
+      const ANDAMENTO_TIMEOUT = 60000; // limite máximo 60s para processos enormes
+      const STABLE_WINDOW = 3000;       // sem crescimento por 3s = estável
+      const deadline = Date.now() + ANDAMENTO_TIMEOUT;
+      let lastCount = -1;
+      let lastChange = Date.now();
+
+      while (Date.now() < deadline) {
+        if (await sleepCancellable(1000, processId)) { await checkCancel(); return; }
+        const snap = await storageGet(`proc_${processId}`);
+        const cur = (snap[`proc_${processId}`] as ProcessDetails | undefined)?.andamento?.length ?? 0;
+
+        if (cur !== lastCount) {
+          lastCount = cur;
+          lastChange = Date.now();
+          setCollectionProgress(
+            processId,
+            `Coletando histórico de tramitação… (${cur} registros)`,
+            2, TOTAL
+          );
+        } else if (cur > 0 && Date.now() - lastChange >= STABLE_WINDOW) {
+          // Estabilizou — paginação completou
+          console.log(`[SEI Assistant] Andamento estabilizou em ${cur} registros`);
+          break;
+        }
+      }
+      if (lastCount === 0) {
+        console.warn("[SEI Assistant] Andamento ficou vazio após timeout — seguindo sem datas");
+      }
+    } else {
+      console.warn("[SEI Assistant] Botão 'Consultar Andamento' não encontrado — pulando passo 2");
+    }
+
+    // ── Passo 3: Ler documentos via clique na árvore ────────────────────────
+    // Prioridade: docs ricos (termo, contrato, DFD, etc.) → depois despachos
+    if (await sleepCancellable(1500, processId)) { await checkCancel(); return; }
+    const raw = await storageGet(`proc_${processId}`);
+    const details = raw[`proc_${processId}`] as ProcessDetails | undefined;
+
+    const DESPACHO_RE = /^despacho\s+\d+/i;
+    const allDocs = details?.documents ?? [];
+    const despachoTitles = allDocs.filter((d) => DESPACHO_RE.test(d));
+
+    const toRead = despachoTitles;
+    console.log(`[SEI Assistant] Despachos: ${toRead.length} total — lendo todos`);
+
+    if (toRead.length > 0) {
+      const despachoTexts: Record<string, string> = {};
+      let readCount = 0;
+
+      for (let i = 0; i < toRead.length; i++) {
+        if (!isContextValid()) break;
+        if (await checkCancel()) return;
+        const title = toRead[i];
+        const docId = title.match(/\b(\d{5,8})\b/)?.[1];
+        if (!docId) continue;
+
+        // Pula documentos restritos sem tentar clicar
+        if (isDocRestrictedInTree(docId)) {
+          console.log(`[SEI Assistant] Despacho ${docId}: restrito — pulando`);
+          continue;
+        }
+
+        setCollectionProgress(
+          processId,
+          `Lendo despacho ${i + 1} de ${toRead.length}… (${readCount} lidos)`,
+          3,
+          TOTAL
+        );
+
+        try {
+          const clicked = clickDespachoInTree(docId, title);
+          if (clicked) {
+            const text = await waitForDespachoContent(docId, 5000);
+            console.log(`[SEI Assistant] Despacho ${docId}: ${text.length > 0 ? text.length + " chars ✓" : "timeout"}`);
+            if (text.length > 50) {
+              readCount++;
+              despachoTexts[title] = text;
+              console.log(`[SEI Assistant] Despacho "${title}" lido (${text.length} chars)`);
+            }
+          }
+        } catch (e) {
+          console.warn(`[SEI Assistant] Erro ao ler despacho "${title}":`, e);
+        }
+
+        if (await sleepCancellable(200, processId)) { await checkCancel(); return; }
+      }
+
+      if (Object.keys(despachoTexts).length > 0) {
+        // Merge por docId — sem duplicatas. Reconstrói o mapa de conteúdo existente
+        const existingMap: Record<string, string> = {};
+        const existingContent = details?.despachosContent ?? "";
+        // Parseia seções "=== Título ===" do conteúdo anterior
+        const sectionRe = /===\s*(.*?)\s*===\n([\s\S]*?)(?====|\s*$)/g;
+        let match;
+        while ((match = sectionRe.exec(existingContent)) !== null) {
+          existingMap[match[1].trim()] = match[2].trim();
+        }
+
+        // Merge: novos sobrescrevem existentes pelo título
+        const mergedMap = { ...existingMap, ...despachoTexts };
+        const despachosContent = Object.entries(mergedMap)
+          .map(([t, c]) => `=== ${t} ===\n${c}`)
+          .join("\n\n");
+
+        const updatedDetails = { ...details, despachosContent };
+        safeStorageSet({ [`proc_${processId}`]: updatedDetails });
+        console.log(`[SEI Assistant] ${Object.keys(despachoTexts).length} novo(s) | ${Object.keys(mergedMap).length} total | ${despachosContent.length} chars`);
+      }
+    }
+
+    // ── Passo 4: Gerar resumo com IA ──────────────────────────────────────────
+    setCollectionProgress(processId, "Gerando resumo com IA…", 4, TOTAL);
+    chrome.runtime.sendMessage(
+      { type: "COLLECTION_DONE", payload: { processId } },
+      () => { /* background dispara a IA */ }
+    );
+
+  } catch (e) {
+    console.error("[SEI Assistant] Erro na coleta:", e);
+    // Contexto pode ter sido invalidado — protege o set
+    if (isContextValid()) {
+      setCollectionProgress(processId, "Erro durante a coleta.", 0, TOTAL, "error", String(e));
+    }
+  }
+}
+
+// ─── Navegação segura para Controle de Processos ──────────────────────────────
+// IMPORTANTE: NUNCA usar window.location.href com URL construída manualmente —
+// `infra_hash` é obrigatório e de uso único. Sem ele, o SEI redireciona pro login.
+// Solução: encontrar e clicar num link existente do SEI (que tem hash fresco do servidor).
+
+function navigateToControleProcessos(): boolean {
+  // Procura em TODOS os frames acessíveis (menu fica no top-frame; ícones podem
+  // estar em iframes filhos da barra superior)
+  for (const doc of getAllAccessibleDocs()) {
+    try {
+      // Estratégia 1: link direto com href contendo a ação E infra_hash válido
+      const anchors = doc.querySelectorAll<HTMLAnchorElement>("a[href*='procedimento_controlar']");
+      for (const a of anchors) {
+        const href = a.getAttribute("href") ?? "";
+        if (href.includes("infra_hash=") && !href.includes("infra_hash=&")) {
+          console.log("[SEI Assistant] Navegando via link existente:", href.slice(0, 80));
+          a.click();
+          return true;
+        }
+      }
+
+      // Estratégia 2: ícone da barra superior (≡ Controle de Processos) com onclick
+      const onclickEls = doc.querySelectorAll<HTMLElement>(
+        "[onclick*='procedimento_controlar'], [title*='Controle de Processos'], [alt*='Controle de Processos']"
+      );
+      for (const el of onclickEls) {
+        const anchor = el.tagName === "A" ? (el as HTMLAnchorElement) : el.closest("a");
+        const onclick = el.getAttribute("onclick") ?? anchor?.getAttribute("onclick") ?? "";
+        const href = anchor?.getAttribute("href") ?? "";
+        if (onclick.includes("infra_hash") || href.includes("infra_hash=")) {
+          console.log("[SEI Assistant] Navegando via ícone da barra superior");
+          (anchor ?? el).click();
+          return true;
+        }
+        // Se for um link válido sem hash visível (ex: onclick com função JS), tenta o clique
+        if (anchor || onclick) {
+          console.log("[SEI Assistant] Navegando via onclick/ícone (sem hash visível)");
+          (anchor ?? el).click();
+          return true;
+        }
+      }
+    } catch { /* frame inacessível */ }
+  }
+
+  console.warn("[SEI Assistant] Nenhum link de 'Controle de Processos' encontrado nos frames acessíveis");
+  return false;
+}
+
 // ─── Listener de mensagens da sidebar ──────────────────────────────────────────
 
 if (isContextValid()) {
@@ -630,7 +1215,6 @@ if (isContextValid()) {
     if (message.type === "EXPAND_TREE") {
       const expanded = tryAutoExpandTree();
       if (expanded > 0) {
-        // Re-extrai após AJAX carregar os sub-itens
         setTimeout(() => {
           if (!isContextValid()) return;
           const id = getCurrentProcessId();
@@ -638,6 +1222,52 @@ if (isContextValid()) {
         }, 2500);
       }
       sendResponse({ ok: true, expanded });
+      return true;
+    }
+
+    if (message.type === "STOP_COLLECTION") {
+      const { processId } = (message.payload ?? {}) as { processId: string };
+      // Seta flag — runFullCollection checa entre as etapas e aborta limpo
+      safeStorageSet({ [`cancelCollection_${processId}`]: true });
+      // Também limpa pendingCollection caso ainda nem tenha começado
+      chrome.storage.local.remove(`pendingCollection_${processId}`);
+      console.log(`[SEI Assistant] Cancelamento solicitado para ${processId}`);
+      sendResponse({ ok: true });
+      return true;
+    }
+
+    if (message.type === "START_COLLECTION") {
+      const { processId } = (message.payload ?? {}) as { processId: string };
+      const action = getActionFromUrl(window.location.href);
+      const onProcessPage = action
+        ? ["procedimento_trabalhar", "arvore_visualizar", "procedimento_visualizar"].includes(action)
+        : false;
+      const currentId = getCurrentProcessId();
+      const isCorrectProcess = currentId === processId;
+
+      if (onProcessPage && isCorrectProcess) {
+        // Já estamos no processo certo — inicia direto
+        sendResponse({ ok: true, navigating: false });
+        runFullCollection(processId);
+      } else {
+        // Salva flag e navega para o Controle de Processos
+        safeStorageSet({ [`pendingCollection_${processId}`]: true });
+        setCollectionProgress(processId, "Navegando para o Controle de Processos…", 0, 4);
+
+        const navigated = navigateToControleProcessos();
+        if (!navigated) {
+          // Não achou nenhum link válido — informa o usuário em vez de navegar
+          // para URL sem hash (que causaria logout)
+          setCollectionProgress(
+            processId,
+            "Abra 'Controle de Processos' manualmente no SEI e tente de novo.",
+            0, 4, "error",
+            "Link do Controle de Processos não encontrado nesta página."
+          );
+          chrome.storage.local.remove(`pendingCollection_${processId}`);
+        }
+        sendResponse({ ok: true, navigating: navigated });
+      }
       return true;
     }
 
@@ -665,6 +1295,74 @@ function trySaveDocUrlTemplate() {
   };
   safeStorageSet({ docUrlTemplate: template });
   console.log(`[SEI Assistant] Template de URL salvo (doc ${idDoc})`);
+}
+
+/**
+ * Varre TODOS os frames acessíveis recursivamente e retorna
+ * o primeiro texto substancial que parece conteúdo de documento SEI.
+ */
+function extractDocContentFromAllFrames(idDoc: string): string {
+  function crawlForContent(win: Window, depth = 0): string {
+    if (depth > 4) return "";
+    try {
+      const doc = win.document;
+
+      // Seletores específicos do visualizador SEI
+      for (const sel of [
+        "#divConteudoVisualizacaoInterna",
+        "#divConteudoVisualizacao",
+        ".infraAreaTelaD",
+      ]) {
+        const el = doc.querySelector(sel);
+        if (el?.textContent && el.textContent.trim().length > 80) {
+          const t = el.textContent.replace(/\s+/g, " ").trim();
+          if (!isRestrictedContent(t)) return t.slice(0, 8000);
+        }
+      }
+
+      // Body fallback — só aceita se contém o docId (confirma que é o doc certo)
+      const body = doc.body?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+      if (body.length > 150 && !isRestrictedContent(body) && body.includes(idDoc)) {
+        return body.slice(0, 5000);
+      }
+
+      // Recursão em frames filhos
+      for (let i = 0; i < win.frames.length; i++) {
+        try {
+          const result = crawlForContent(win.frames[i] as Window, depth + 1);
+          if (result) return result;
+        } catch { /* cross-origin */ }
+      }
+    } catch { /* ignora */ }
+    return "";
+  }
+  return crawlForContent(window);
+}
+
+function trySaveDocContent() {
+  const action = getActionFromUrl(window.location.href);
+  const params = new URL(window.location.href).searchParams;
+  const validActions = ["documento_visualizar", "procedimento_visualizar", "procedimento_trabalhar"];
+  if (!action || !validActions.includes(action)) return;
+
+  const idDoc = params.get("id_documento");
+  if (!idDoc) return;
+
+  // Tenta extrair com polling — aguarda frames filhos carregarem
+  let attempts = 0;
+  const maxAttempts = 10;
+  const interval = setInterval(() => {
+    if (!isContextValid()) { clearInterval(interval); return; }
+    attempts++;
+    const content = extractDocContentFromAllFrames(idDoc);
+    if (content) {
+      clearInterval(interval);
+      safeStorageSet({ [`docContent_${idDoc}`]: content });
+      console.log(`[SEI Assistant] Doc ${idDoc} salvo (${content.length} chars, tentativa ${attempts})`);
+    } else if (attempts >= maxAttempts) {
+      clearInterval(interval);
+    }
+  }, 400);
 }
 
 // ─── Captura URL do botão ZIP ───────────────────────────────────────────────────
@@ -739,12 +1437,15 @@ function trySaveZipUrl(processId: string) {
 
 let lastKnownAuth = false;
 
+let pendingCollectionCheckDone = false;
+
 function checkAndNotify() {
   const currentlyAuth = isAuthenticated();
 
   if (currentlyAuth && !lastKnownAuth) {
     console.log("[SEI Assistant] Sessão detectada.");
     notifySessionDetected();
+    pendingCollectionCheckDone = false; // reset ao detectar nova sessão
   }
   if (!currentlyAuth && lastKnownAuth) {
     console.log("[SEI Assistant] Sessão encerrada.");
@@ -757,11 +1458,95 @@ function checkAndNotify() {
     tryCollectAndSave();
     tryExtractAndSaveDetails();
     trySaveDocUrlTemplate();
+    trySaveDocContent();
 
-    // Captura URL do ZIP para o processo atual
     const currentId = getCurrentProcessId();
-    if (currentId) trySaveZipUrl(currentId);
+    if (currentId) {
+      trySaveZipUrl(currentId);
+
+      // Checa pendingCollection — roda uma vez por processo após navegação
+      if (!pendingCollectionCheckDone && isTopFrame) {
+        const action = getActionFromUrl(window.location.href);
+        const onProcessPage = action
+          ? ["procedimento_trabalhar", "arvore_visualizar", "procedimento_visualizar"].includes(action)
+          : false;
+
+        if (onProcessPage) {
+          pendingCollectionCheckDone = true;
+          const pendingKey = `pendingCollection_${currentId}`;
+          chrome.storage.local.get(pendingKey, (r) => {
+            if (!isContextValid() || !r[pendingKey]) return;
+            chrome.storage.local.remove(pendingKey);
+            console.log(`[SEI Assistant] Coleta pendente — iniciando para ${currentId}`);
+            setTimeout(() => { if (isContextValid()) runFullCollection(currentId); }, 2000);
+          });
+        }
+      }
+    }
+
+    // Se estamos no Controle de Processos COM coleta pendente, clica no link do processo
+    if (isTopFrame && isProcessListPage() && !autoOpenedFromList) {
+      tryAutoOpenPendingProcess();
+    }
   }
+}
+
+let autoOpenedFromList = false;
+
+/**
+ * Quando o usuário inicia coleta de um processo que NÃO está aberto, o sistema
+ * navega para o Controle de Processos. Esta função detecta isso e clica no link
+ * do processo automaticamente, evitando passo manual.
+ */
+function tryAutoOpenPendingProcess() {
+  chrome.storage.local.get(null, (all) => {
+    if (!isContextValid()) return;
+
+    // Acha qualquer pendingCollection_${processId} ativo
+    const pendingKey = Object.keys(all).find((k) => k.startsWith("pendingCollection_"));
+    if (!pendingKey) return;
+    const processId = pendingKey.replace("pendingCollection_", "");
+
+    autoOpenedFromList = true;
+    setCollectionProgress(processId, "Abrindo processo na lista…", 0, 4);
+
+    // Procura o link do processo na tabela. O número está no texto, link no <a>.
+    setTimeout(() => {
+      if (!isContextValid()) return;
+      const rows = document.querySelectorAll<HTMLTableRowElement>("table.infraTable tr");
+      for (const row of rows) {
+        const text = row.textContent ?? "";
+        if (!text.includes(processId)) continue;
+
+        // Acha o <a> com o número do processo (geralmente é o link primário)
+        const anchors = row.querySelectorAll<HTMLAnchorElement>("a");
+        for (const a of anchors) {
+          if ((a.textContent ?? "").includes(processId)) {
+            console.log(`[SEI Assistant] Auto-clicando no processo ${processId} da lista`);
+            a.click();
+            return;
+          }
+        }
+        // Fallback: clica no primeiro link da linha
+        if (anchors.length > 0) {
+          console.log(`[SEI Assistant] Auto-clicando (fallback) no processo ${processId}`);
+          anchors[0].click();
+          return;
+        }
+      }
+
+      // Processo não encontrado na lista visível
+      console.warn(`[SEI Assistant] Processo ${processId} não encontrado na lista do Controle de Processos`);
+      setCollectionProgress(
+        processId,
+        `Processo ${processId} não está na lista. Abra-o manualmente no SEI.`,
+        0, 4, "error",
+        "Processo fora da página atual do Controle de Processos."
+      );
+      chrome.storage.local.remove(pendingKey);
+      autoOpenedFromList = false;
+    }, 500);
+  });
 }
 
 function startObserver() {

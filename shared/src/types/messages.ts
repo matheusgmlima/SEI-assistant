@@ -13,7 +13,20 @@ export type MessageType =
   | "EXPAND_TREE"
   | "GET_ANDAMENTO"
   | "GET_DB_ANDAMENTO"
-  | "CHECK_SYNC";
+  | "CHECK_SYNC"
+  | "START_COLLECTION"
+  | "STOP_COLLECTION"
+  | "COLLECTION_DONE";
+
+export interface CollectionStatus {
+  processId: string;
+  status: "running" | "done" | "error";
+  phase: string;
+  step: number;
+  totalSteps: number;
+  startedAt: number;
+  error?: string;
+}
 
 export interface ExtMessage<T = unknown> {
   type: MessageType;
