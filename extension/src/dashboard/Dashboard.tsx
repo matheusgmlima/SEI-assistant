@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ProcessDetails, SessionInfo } from "@shared/index";
 import { computeMetrics, type DashMetrics, type RiskSlice, type BarItem } from "./metrics";
 
@@ -7,29 +7,31 @@ function useCollectedProcesses() {
   const [list, setList] = useState<ProcessDetails[]>([]);
   const [unit, setUnit] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [refreshedAt, setRefreshedAt] = useState<number>(Date.now());
+
+  const reload = useCallback(() => {
+    chrome.storage.local.get(null, (all) => {
+      const procs: ProcessDetails[] = [];
+      for (const k of Object.keys(all)) {
+        if (k.startsWith("proc_")) procs.push(all[k] as ProcessDetails);
+      }
+      setList(procs);
+      const s = all.session as SessionInfo | undefined;
+      setUnit(s?.unit ?? null);
+      setLoaded(true); setRefreshedAt(Date.now());
+    });
+  }, []);
 
   useEffect(() => {
-    function readAll() {
-      chrome.storage.local.get(null, (all) => {
-        const procs: ProcessDetails[] = [];
-        for (const k of Object.keys(all)) {
-          if (k.startsWith("proc_")) procs.push(all[k] as ProcessDetails);
-        }
-        setList(procs);
-        const s = all.session as SessionInfo | undefined;
-        setUnit(s?.unit ?? null);
-        setLoaded(true);
-      });
-    }
-    readAll();
+    reload();
     const fn = (c: Record<string, chrome.storage.StorageChange>) => {
-      if (Object.keys(c).some((k) => k.startsWith("proc_"))) readAll();
+      if (Object.keys(c).some((k) => k.startsWith("proc_"))) reload();
     };
     chrome.storage.onChanged.addListener(fn);
     return () => chrome.storage.onChanged.removeListener(fn);
-  }, []);
+  }, [reload]);
 
-  return { list, unit, loaded };
+  return { list, unit, loaded, reload, refreshedAt };
 }
 
 // ─── Gráficos (SVG/CSS puro) ─────────────────────────────────────────────────────
@@ -117,8 +119,13 @@ const RISK_BADGE: Record<string, { label: string; cls: string }> = {
 
 // ─── App ───────────────────────────────────────────────────────────────────────
 export default function Dashboard() {
-  const { list, unit, loaded } = useCollectedProcesses();
+  const { list, unit, loaded, reload, refreshedAt } = useCollectedProcesses();
   const m: DashMetrics = useMemo(() => computeMetrics(list), [list]);
+  const [reloaded, setReloaded] = useState(false);
+
+  function doReload() {
+    reload(); setReloaded(true); setTimeout(() => setReloaded(false), 1800);
+  }
 
   return (
     <div className="dash">
@@ -127,7 +134,10 @@ export default function Dashboard() {
           <h1 className="dash-title">Painel da Unidade</h1>
           <p className="dash-sub">{unit ?? "SEI Assistant — TJPE"}</p>
         </div>
-        <div className="dash-updated">Atualizado agora · {m.total} processos coletados</div>
+        <div className="dash-head-right">
+          <button className="dash-reload" onClick={doReload}>{reloaded ? "✓ Atualizado" : "🔄 Recarregar"}</button>
+          <div className="dash-updated">{m.total} processos · dados de {new Date(refreshedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</div>
+        </div>
       </header>
 
       {!loaded ? (

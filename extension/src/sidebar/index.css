@@ -1339,6 +1339,22 @@ body {
 .audit-score-label { font-size: 11px; font-weight: 600; color: var(--color-text); }
 .audit-findings-count { font-size: 10px; color: var(--color-muted); }
 
+/* Detalhamento do score */
+.audit-breakdown {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2);
+  font-size: 11px; color: var(--color-text-soft);
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: var(--radius-md); padding: var(--sp-2) var(--sp-3); box-shadow: var(--shadow-xs);
+}
+.audit-bd-base { font-weight: 700; color: var(--color-text); }
+.audit-bd-item { color: var(--color-danger); }
+.audit-bd-item small { color: var(--color-muted); font-size: 9.5px; }
+.audit-bd-eq { margin-left: auto; font-weight: 700; color: var(--color-primary-dark); }
+.audit-ia-note {
+  font-size: 10px; color: var(--color-muted); font-style: italic;
+  margin: -2px 0 var(--sp-2);
+}
+
 /* Seções */
 .audit-section-label {
   font-size: 10px;

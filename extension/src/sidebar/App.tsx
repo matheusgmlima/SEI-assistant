@@ -936,12 +936,13 @@ function AuditPanel({
   const presentes = audit.checklist.filter((c) => c.status === "presente").length;
   const totalCheck = audit.checklist.length;
 
-  // Agrupa findings por severidade na ordem de gravidade
+  // Separa achados que pontuam (regra, não-documental) das observações da IA
   const order: AuditSeverity[] = ["critico", "alto", "medio", "baixo"];
-  const sortedFindings = [...audit.findings].sort(
-    (a, b) => order.indexOf(a.severity) - order.indexOf(b.severity)
-  );
+  const bySev = (a: AuditFinding, b: AuditFinding) => order.indexOf(a.severity) - order.indexOf(b.severity);
+  const ruleFindings = audit.findings.filter((f) => f.source === "regra").sort(bySev);
+  const iaFindings = audit.findings.filter((f) => f.source === "ia").sort(bySev);
 
+  const bd = audit.breakdown;
   const genAt = new Date(audit.generatedAt);
   const genStr = `${String(genAt.getDate()).padStart(2, "0")}/${String(genAt.getMonth() + 1).padStart(2, "0")} ${String(genAt.getHours()).padStart(2, "0")}:${String(genAt.getMinutes()).padStart(2, "0")}`;
 
@@ -955,34 +956,61 @@ function AuditPanel({
         </div>
         <div className="audit-score-info">
           <span className={`audit-risk-badge ${risk.cls}`}>{risk.label}</span>
-          <span className="audit-score-label">Conformidade</span>
+          <span className="audit-score-label">Conformidade documental</span>
           <span className="audit-findings-count">
-            {audit.findings.length} {audit.findings.length === 1 ? "achado" : "achados"} · {presentes}/{totalCheck} documentos
+            {presentes}/{totalCheck} documentos · {ruleFindings.length} {ruleFindings.length === 1 ? "achado" : "achados"} de regra
           </span>
         </div>
       </div>
 
+      {/* Como o score foi calculado (transparência) */}
+      {bd && (
+        <div className="audit-breakdown">
+          <span className="audit-bd-base">100</span>
+          {bd.penalidadeDocumentos > 0 && (
+            <span className="audit-bd-item">− {bd.penalidadeDocumentos} <small>({bd.docsObrigatoriosAusentes} obrigatório(s) + {bd.docsOpcionaisAusentes} opcional(is) ausente(s))</small></span>
+          )}
+          {bd.penalidadeAchados > 0 && (
+            <span className="audit-bd-item">− {bd.penalidadeAchados} <small>({bd.achadosRegra} achado(s) de regra)</small></span>
+          )}
+          <span className="audit-bd-eq">= {audit.score}</span>
+        </div>
+      )}
+
       {/* Parecer da IA */}
       {audit.aiSummary && (
         <div className="audit-summary">
-          <p className="audit-section-label">Parecer</p>
+          <p className="audit-section-label">Parecer da IA</p>
           <p className="audit-summary-text">{audit.aiSummary}</p>
         </div>
       )}
 
-      {/* Achados */}
+      {/* Achados de regra (pontuam no score) */}
       <div className="audit-block">
-        <p className="audit-section-label">Achados ({audit.findings.length})</p>
-        {sortedFindings.length === 0 ? (
-          <div className="audit-no-findings">✓ Nenhuma irregularidade identificada.</div>
+        <p className="audit-section-label">Achados de conformidade ({ruleFindings.length})</p>
+        {ruleFindings.length === 0 ? (
+          <div className="audit-no-findings">✓ Nenhuma irregularidade objetiva identificada.</div>
         ) : (
           <div className="audit-findings">
-            {sortedFindings.map((f, i) => (
+            {ruleFindings.map((f, i) => (
               <AuditFindingCard key={i} finding={f} />
             ))}
           </div>
         )}
       </div>
+
+      {/* Observações da IA (informativas — não afetam o score) */}
+      {iaFindings.length > 0 && (
+        <div className="audit-block">
+          <p className="audit-section-label">Observações da IA ({iaFindings.length})</p>
+          <p className="audit-ia-note">Análise qualitativa — não afeta a pontuação. Confira na fonte.</p>
+          <div className="audit-findings">
+            {iaFindings.map((f, i) => (
+              <AuditFindingCard key={i} finding={f} />
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Checklist documental */}
       <div className="audit-block">
@@ -1901,8 +1929,8 @@ function ActiveScreen({ session }: { session: SessionInfo }) {
       <nav className="actions">
         <p className="actions-label">Ações rápidas</p>
         <ActionItem icon="📋" title="Meus processos" desc="Listar e resumir processos" onClick={() => setView("processes")}/>
-        <ActionItem icon="📄" title="Resumir documento" desc="Documento aberto no SEI" onClick={() => {}}/>
-        <ActionItem icon="📊" title="Gerar relatório" desc="Exportar período" onClick={() => {}}/>
+        <ActionItem icon="📊" title="Controle SAD" desc="Exportar processos para a planilha" onClick={() => chrome.tabs.create({ url: chrome.runtime.getURL("dist/sad.html") })}/>
+        <ActionItem icon="📈" title="Painel da unidade" desc="Métricas e gargalos" onClick={() => chrome.runtime.sendMessage({ type: "OPEN_DASHBOARD" })}/>
       </nav>
 
       <footer className="sidebar-footer">

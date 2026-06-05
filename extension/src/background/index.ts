@@ -398,7 +398,7 @@ async function runAudit(config: AiConfig | undefined, details: ProcessDetails): 
   }
 
   const findings = mergeFindings(regras, aiFindings);
-  const { score, riskLevel } = computeScore(checklist, findings);
+  const { score, riskLevel, breakdown } = computeScore(checklist, findings);
 
   return {
     processId: details.id,
@@ -408,6 +408,7 @@ async function runAudit(config: AiConfig | undefined, details: ProcessDetails): 
     findings,
     checklist,
     aiSummary,
+    breakdown,
     generatedAt: Date.now(),
   };
 }

@@ -50,6 +50,23 @@ function safeSendMessage(message: unknown) {
   } catch { /* contexto invalidado */ }
 }
 
+/**
+ * Clica num elemento neutralizando href="javascript:..." para não disparar a
+ * navegação por JavaScript URL, que a CSP do SEI bloqueia (poluindo o console).
+ * A ação real dos links do SEI está no onclick; o href é só placeholder.
+ */
+function safeClick(el: Element | null | undefined): void {
+  if (!el) return;
+  const a = el as HTMLAnchorElement;
+  const href = typeof a.getAttribute === "function" ? a.getAttribute("href") : null;
+  if (href && /^\s*javascript:/i.test(href)) {
+    a.removeAttribute("href");
+    try { (el as HTMLElement).click(); } finally { a.setAttribute("href", href); }
+  } else {
+    (el as HTMLElement).click();
+  }
+}
+
 // ─── Constantes ────────────────────────────────────────────────────────────────
 
 const AUTHENTICATED_ACTIONS = [
@@ -492,7 +509,7 @@ function tryAutoOpenAndamento(processId: string) {
       if (btn) {
         autoAndamentoOpened.add(processId);
         console.log(`[SEI Assistant] Auto-abrindo "Consultar Andamento" para ${processId}`);
-        try { btn.click(); } catch (e) { console.warn("[SEI Assistant] Clique falhou:", e); }
+        try { safeClick(btn); } catch (e) { console.warn("[SEI Assistant] Clique falhou:", e); }
       } else {
         console.log(`[SEI Assistant] Botão "Consultar Andamento" não encontrado para ${processId}`);
       }
@@ -513,7 +530,7 @@ function tryAutoExpandTree(): number {
         'img[src*="mais"], img[src*="expandir"], img[src*="img_mais"], img[alt="+"], img[title*="Expandir"]'
       ).forEach((img) => {
         const a = img.closest<HTMLAnchorElement>("a");
-        if (a) { try { a.click(); expanded++; } catch { /* ignora */ } }
+        if (a) { try { safeClick(a); expanded++; } catch { /* ignora */ } }
       });
 
       // Estratégia 2: links com onclick de expansão da InfraArvore
@@ -523,7 +540,7 @@ function tryAutoExpandTree(): number {
         const parent = a.closest("span, div, li");
         const sibling = parent?.nextElementSibling as HTMLElement | null;
         const isCollapsed = !sibling || sibling.style?.display === "none" || sibling.childElementCount === 0;
-        if (isCollapsed) { try { a.click(); expanded++; } catch { /* ignora */ } }
+        if (isCollapsed) { try { safeClick(a); expanded++; } catch { /* ignora */ } }
       });
 
       // Estratégia 3: ícones de pasta colapsada pelo src (padrão TJPE)
@@ -531,7 +548,7 @@ function tryAutoExpandTree(): number {
         'img[src*="pasta_fechada"], img[src*="folder_closed"], img[src*="collapsed"]'
       ).forEach((img) => {
         const a = img.closest<HTMLAnchorElement>("a");
-        if (a) { try { a.click(); expanded++; } catch { /* ignora */ } }
+        if (a) { try { safeClick(a); expanded++; } catch { /* ignora */ } }
       });
 
       // Estratégia 4: elementos da InfraArvore com estado colapsado
@@ -539,7 +556,7 @@ function tryAutoExpandTree(): number {
         .forEach((el) => {
           const parentId = el.id.replace("divInfra", "");
           const trigger = doc.querySelector<HTMLElement>(`a[onclick*="${parentId}"], a[href*="${parentId}"]`);
-          if (trigger) { try { trigger.click(); expanded++; } catch { /* ignora */ } }
+          if (trigger) { try { safeClick(trigger); expanded++; } catch { /* ignora */ } }
         });
     } catch { /* frame inacessível */ }
   }
@@ -724,7 +741,7 @@ function doExtractAndSave(id: string) {
         console.log(`[SEI Assistant] Próxima página do histórico — clicando automaticamente`);
         setTimeout(() => {
           if (!isContextValid()) return;
-          try { nextLink.click(); } catch { /* ignora */ }
+          try { safeClick(nextLink); } catch { /* ignora */ }
         }, 400);
       } else {
         console.log(`[SEI Assistant] Histórico completo: ${finalAndamento.length} registros extraídos`);
@@ -897,7 +914,7 @@ function clickDespachoInTree(docId: string, titleHint = ""): boolean {
       for (const a of anchors) {
         const attrs = Array.from(a.attributes).map((x) => x.value).join(" ");
         if (attrs.includes(`id_documento=${docId}`)) {
-          a.click();
+          safeClick(a);
           console.log(`[SEI Assistant] ✓ Clicou despacho ${docId} (estratégia 1)`);
           return true;
         }
@@ -907,7 +924,7 @@ function clickDespachoInTree(docId: string, titleHint = ""): boolean {
       for (const a of anchors) {
         const attrs = Array.from(a.attributes).map((x) => x.value).join(" ");
         if (new RegExp(`(?<![0-9])${docId}(?![0-9])`).test(attrs)) {
-          a.click();
+          safeClick(a);
           console.log(`[SEI Assistant] ✓ Clicou despacho ${docId} (estratégia 2)`);
           return true;
         }
@@ -917,8 +934,8 @@ function clickDespachoInTree(docId: string, titleHint = ""): boolean {
       for (const node of doc.querySelectorAll(".infraArvoreNo")) {
         if ((node.textContent ?? "").includes(docId)) {
           const anchor = node.closest<HTMLAnchorElement>("a") ?? node.querySelector<HTMLAnchorElement>("a");
-          if (anchor) { anchor.click(); console.log(`[SEI Assistant] ✓ Clicou despacho ${docId} (estratégia 3a)`); return true; }
-          (node as HTMLElement).click();
+          if (anchor) { safeClick(anchor); console.log(`[SEI Assistant] ✓ Clicou despacho ${docId} (estratégia 3a)`); return true; }
+          safeClick(node);
           console.log(`[SEI Assistant] ✓ Clicou despacho ${docId} (estratégia 3b)`);
           return true;
         }
@@ -929,7 +946,7 @@ function clickDespachoInTree(docId: string, titleHint = ""): boolean {
       for (const a of anchors) {
         const text = (a.textContent ?? "").toLowerCase();
         if (text.includes(docId) || (hint.length > 4 && text.includes(hint))) {
-          a.click();
+          safeClick(a);
           console.log(`[SEI Assistant] ✓ Clicou despacho ${docId} (estratégia 4)`);
           return true;
         }
@@ -1053,7 +1070,7 @@ async function runFullCollection(processId: string) {
     // Retry: a toolbar do SEI pode demorar a renderizar após a navegação
     const andBtn = await findAndamentoButtonWithRetry(processId);
     if (andBtn) {
-      andBtn.click();
+      safeClick(andBtn);
       // Espera adaptativa: monitora storage até o andamento estabilizar
       // (paginação automática vai adicionando linhas; quando para de crescer por 3s, completou)
       const ANDAMENTO_TIMEOUT = 60000; // limite máximo 60s para processos enormes
@@ -1292,7 +1309,7 @@ function navigateToControleProcessos(): boolean {
         const href = a.getAttribute("href") ?? "";
         if (href.includes("infra_hash=") && !href.includes("infra_hash=&")) {
           console.log("[SEI Assistant] Navegando via link existente:", href.slice(0, 80));
-          a.click();
+          safeClick(a);
           return true;
         }
       }
@@ -1307,13 +1324,13 @@ function navigateToControleProcessos(): boolean {
         const href = anchor?.getAttribute("href") ?? "";
         if (onclick.includes("infra_hash") || href.includes("infra_hash=")) {
           console.log("[SEI Assistant] Navegando via ícone da barra superior");
-          (anchor ?? el).click();
+          safeClick(anchor ?? el);
           return true;
         }
         // Se for um link válido sem hash visível (ex: onclick com função JS), tenta o clique
         if (anchor || onclick) {
           console.log("[SEI Assistant] Navegando via onclick/ícone (sem hash visível)");
-          (anchor ?? el).click();
+          safeClick(anchor ?? el);
           return true;
         }
       }
@@ -1664,14 +1681,14 @@ function tryAutoOpenPendingProcess() {
         for (const a of anchors) {
           if ((a.textContent ?? "").includes(processId)) {
             console.log(`[SEI Assistant] Auto-clicando no processo ${processId} da lista`);
-            a.click();
+            safeClick(a);
             return;
           }
         }
         // Fallback: clica no primeiro link da linha
         if (anchors.length > 0) {
           console.log(`[SEI Assistant] Auto-clicando (fallback) no processo ${processId}`);
-          anchors[0].click();
+          safeClick(anchors[0]);
           return;
         }
       }

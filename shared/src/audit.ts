@@ -38,14 +38,24 @@ export interface ChecklistItem {
   critical: boolean;      // se a ausência representa risco alto
 }
 
+export interface ScoreBreakdown {
+  docsObrigatoriosAusentes: number;
+  docsOpcionaisAusentes: number;
+  achadosRegra: number;       // achados determinísticos não-documentais que pontuaram
+  penalidadeDocumentos: number;
+  penalidadeAchados: number;
+  observacoesIa: number;      // achados da IA (informativos, não pontuam)
+}
+
 export interface AuditResult {
   processId: string;
   category: ProcessCategory;
-  score: number;          // 0-100
+  score: number;          // 0-100 (determinístico para o mesmo conjunto de dados)
   riskLevel: AuditSeverity;
   findings: AuditFinding[];
   checklist: ChecklistItem[];
   aiSummary: string | null;
+  breakdown?: ScoreBreakdown; // como o score foi composto (transparência)
   generatedAt: number;
 }
 
@@ -260,43 +270,69 @@ function detectGargalo(sorted: AndamentoEntry[]): Gargalo | null {
 }
 
 // ─── Cálculo de score e risco ────────────────────────────────────────────────────
+//
+// DETERMINÍSTICO: o score depende APENAS de sinais objetivos e reproduzíveis —
+// conformidade documental (checklist) + achados de REGRA não-documentais
+// (processo parado, gargalo, financeiro). Os achados da IA são informativos e
+// NÃO afetam o número (eram a principal causa de o score "pular" entre execuções
+// com os mesmos dados). A penalização documental vem só do checklist — os
+// achados de regra da categoria "documental" (Ausência de X) não descontam de
+// novo, evitando dupla penalização.
 
-const SEVERITY_WEIGHT: Record<AuditSeverity, number> = {
-  critico: 25, alto: 14, medio: 7, baixo: 3, ok: 0,
+const DOC_PENALTY_CRITICAL = 15;
+const DOC_PENALTY_OPTIONAL = 5;
+const RULE_WEIGHT: Record<AuditSeverity, number> = {
+  critico: 20, alto: 12, medio: 7, baixo: 3, ok: 0,
 };
 
 export function computeScore(
   checklist: ChecklistItem[],
   findings: AuditFinding[]
-): { score: number; riskLevel: AuditSeverity } {
-  let score = 100;
+): { score: number; riskLevel: AuditSeverity; breakdown: ScoreBreakdown } {
+  let docsObrigatoriosAusentes = 0;
+  let docsOpcionaisAusentes = 0;
+  let penalidadeDocumentos = 0;
 
-  // Desconto por documento ausente
   for (const c of checklist) {
-    if (c.status === "ausente") score -= c.critical ? 10 : 3;
+    if (c.status !== "ausente") continue;
+    if (c.critical) { docsObrigatoriosAusentes++; penalidadeDocumentos += DOC_PENALTY_CRITICAL; }
+    else { docsOpcionaisAusentes++; penalidadeDocumentos += DOC_PENALTY_OPTIONAL; }
   }
 
-  // Desconto por achado (evita dupla penalização: usa o maior peso por categoria+título)
+  // Achados de regra NÃO-documentais (temporal, financeiro, processual).
+  // Documental já está coberto pelo checklist; IA não pontua.
+  let penalidadeAchados = 0;
+  let achadosRegra = 0;
   const seen = new Set<string>();
   for (const f of findings) {
+    if (f.source !== "regra") continue;
+    if (f.category === "documental") continue;
     const k = `${f.category}|${f.title.toLowerCase()}`;
     if (seen.has(k)) continue;
     seen.add(k);
-    score -= SEVERITY_WEIGHT[f.severity] ?? 0;
+    achadosRegra++;
+    penalidadeAchados += RULE_WEIGHT[f.severity] ?? 0;
   }
 
-  score = Math.max(0, Math.min(100, Math.round(score)));
+  const observacoesIa = findings.filter((f) => f.source === "ia").length;
 
-  const hasCritico = findings.some((f) => f.severity === "critico");
-  const hasAlto = findings.some((f) => f.severity === "alto");
+  const score = Math.max(0, Math.min(100, Math.round(100 - penalidadeDocumentos - penalidadeAchados)));
 
+  // riskLevel derivado puramente do score (determinístico)
   let riskLevel: AuditSeverity;
-  if (hasCritico || score < 40) riskLevel = "critico";
-  else if (hasAlto || score < 60) riskLevel = "alto";
-  else if (score < 80) riskLevel = "medio";
+  if (score < 50) riskLevel = "critico";
+  else if (score < 70) riskLevel = "alto";
+  else if (score < 85) riskLevel = "medio";
   else riskLevel = "baixo";
 
-  return { score, riskLevel };
+  return {
+    score,
+    riskLevel,
+    breakdown: {
+      docsObrigatoriosAusentes, docsOpcionaisAusentes, achadosRegra,
+      penalidadeDocumentos, penalidadeAchados, observacoesIa,
+    },
+  };
 }
 
 // ─── Dedup de findings (regra + IA) ──────────────────────────────────────────────

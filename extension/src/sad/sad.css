@@ -1,0 +1,108 @@
+/* extension/src/sad/sad.css */
+:root {
+  --p: #005B8E; --pd: #003D61; --accent: #00A3D9;
+  --bg: #F4F6FA; --surface: #fff; --border: #E4E9F2; --border-strong: #CCD5E3;
+  --text: #1A2A45; --text-soft: #475569; --muted: #7A8AAA;
+  --ok: #16A34A; --warn: #C2410C;
+  --radius: 12px; --shadow: 0 1px 3px rgba(15,35,70,.06), 0 1px 2px rgba(15,35,70,.04);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: "Inter","Segoe UI",Roboto,-apple-system,sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
+.sad { max-width: 980px; margin: 0 auto; padding: 24px 28px 56px; }
+
+.sad-header { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; border-bottom: 2px solid var(--border); padding-bottom: 16px; margin-bottom: 16px; }
+.sad-title { font-size: 21px; font-weight: 700; color: var(--pd); }
+.sad-sub { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.sad-refreshed { color: var(--border-strong); }
+.sad-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.sad-btn { font-size: 12px; font-weight: 600; border: none; border-radius: 8px; padding: 9px 14px; cursor: pointer; transition: background .15s; }
+.sad-btn-primary { background: var(--p); color: #fff; }
+.sad-btn-primary:hover:not(:disabled) { background: var(--pd); }
+.sad-btn-ghost { background: #fff; color: var(--p); border: 1px solid var(--border-strong); }
+.sad-btn-ghost:hover:not(:disabled) { background: var(--bg); }
+.sad-btn-test { background: #fff; color: #7c3aed; border: 1px dashed #c4b5fd; }
+.sad-btn-test:hover:not(:disabled) { background: #f5f3ff; }
+.sad-btn:disabled { opacity: .45; cursor: default; }
+
+.sad-howto { font-size: 12px; line-height: 1.6; color: var(--text-soft); background: #FEF9E7; border: 1px solid #F5C842; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; }
+.sad-howto b { color: var(--pd); }
+
+.sad-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.sad-count { font-size: 13px; font-weight: 600; color: var(--text); }
+.sad-filter { font-size: 12px; color: var(--text-soft); display: flex; align-items: center; gap: 6px; cursor: pointer; }
+
+.sad-empty { text-align: center; padding: 50px 20px; color: var(--muted); }
+.sad-empty-title { font-size: 16px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+
+.sad-list { display: flex; flex-direction: column; gap: 10px; }
+.sad-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+.sad-card--incomplete { border-left: 3px solid var(--warn); }
+.sad-card-head { display: flex; align-items: center; gap: 12px; padding: 12px 16px; cursor: pointer; }
+.sad-card-head:hover { background: #FAFBFD; }
+.sad-card-id { font-family: ui-monospace, monospace; font-weight: 600; color: var(--p); font-size: 12px; flex-shrink: 0; }
+.sad-card-obj { flex: 1; font-size: 12.5px; color: var(--text-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sad-head-badges { display: flex; gap: 5px; flex-shrink: 0; }
+.sad-badge { font-size: 10.5px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; flex-shrink: 0; }
+.sad-badge--ok { color: var(--ok); background: #ECFDF5; border: 1px solid #A7E3BE; }
+.sad-badge--warn { color: var(--warn); background: #FFF7ED; border: 1px solid #FED7AA; }
+.sad-badge--req { color: #B91C1C; background: #FEF2F2; border: 1px solid #FCA5A5; }
+.sad-badge--review { color: var(--warn); background: #FFF7ED; border: 1px solid #FED7AA; }
+.sad-chevron { color: var(--muted); font-size: 11px; }
+
+.sad-card-body { padding: 14px 18px 18px; border-top: 1px solid var(--border); }
+
+/* Bloco "Revisar e completar" — destaque */
+.sad-attention {
+  background: #FFFBF3; border: 1px solid #FDE6C8; border-radius: 10px;
+  padding: 14px 16px; margin-bottom: 12px;
+}
+.sad-block-title { font-size: 13px; font-weight: 700; color: var(--warn); display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
+.sad-block-icon { font-size: 14px; }
+.sad-block-hint { font-size: 11px; font-weight: 400; color: var(--muted); margin-left: 4px; }
+.sad-allgood {
+  font-size: 12.5px; color: var(--ok); font-weight: 600;
+  background: #ECFDF5; border: 1px solid #A7E3BE; border-radius: 10px; padding: 12px 16px; margin-bottom: 12px;
+}
+
+/* Botão de mostrar demais campos */
+.sad-toggle-all {
+  width: 100%; text-align: left; background: none; border: none; cursor: pointer;
+  font-size: 12px; font-weight: 600; color: var(--p); padding: 8px 2px;
+}
+.sad-toggle-all:hover { color: var(--pd); }
+.sad-rest { padding-top: 4px; }
+
+/* Grid 2 colunas — mais arejado */
+.sad-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px 18px; }
+.sad-field { display: flex; flex-direction: column; gap: 4px; }
+.sad-field label { font-size: 11px; font-weight: 600; color: var(--text-soft); display: flex; align-items: center; gap: 6px; }
+.sad-field-name { display: flex; align-items: center; gap: 3px; }
+.sad-field .req { color: #B91C1C; }
+.sad-field select, .sad-field input, .sad-field textarea {
+  font-size: 12.5px; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 8px;
+  font-family: inherit; color: var(--text); outline: none; background: #fff; resize: vertical; width: 100%;
+}
+.sad-field select:focus, .sad-field input:focus, .sad-field textarea:focus { border-color: var(--p); box-shadow: 0 0 0 3px rgba(0,91,142,.12); }
+.sad-field input.ro { background: var(--bg); color: var(--muted); font-family: ui-monospace, monospace; font-size: 11.5px; }
+.sad-field--req select, .sad-field--req input, .sad-field--req textarea { border-color: #FCA5A5; background: #FEF6F6; }
+.sad-field--review select, .sad-field--review input, .sad-field--review textarea { border-color: #FED7AA; background: #FFFCF7; }
+
+/* Selos de atenção */
+.tag { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; padding: 1px 7px; border-radius: 999px; margin-left: auto; white-space: nowrap; }
+.tag-req { color: #B91C1C; background: #FEF2F2; border: 1px solid #FCA5A5; }
+.tag-review { color: var(--warn); background: #FFF7ED; border: 1px solid #FED7AA; }
+
+/* bolinha de origem (campos sem atenção) */
+.src-tag { width: 7px; height: 7px; border-radius: 50%; margin-left: auto; flex-shrink: 0; }
+.src-tag.src-auto { background: var(--text); }
+.src-tag.src-inferido { background: var(--warn); }
+.src-tag.src-manual { background: var(--p); }
+.src-tag.src-vazio { background: var(--border-strong); }
+
+.sad-legend { font-size: 10px; color: var(--muted); margin: 0 0 10px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 2px; }
+.dot.src-auto { background: var(--text); }
+.dot.src-inferido { background: var(--warn); }
+.dot.src-manual { background: var(--p); }
+
+@media (max-width: 560px) { .sad-grid { grid-template-columns: 1fr; } }
