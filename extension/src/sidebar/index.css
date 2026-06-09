@@ -687,6 +687,16 @@ body {
   line-height: 1.7;
 }
 
+.read-status {
+  font-size: 10.5px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-2) var(--sp-3);
+  margin-top: var(--sp-2);
+  line-height: 1.45;
+}
+.read-status--ok { color: #166534; background: var(--color-success-bg); border: 1px solid var(--color-success-border); }
+.read-status--warn { color: var(--color-warning-text); background: var(--color-warning-bg); border: 1px solid var(--color-warning-border); }
+
 /* Documentos-chave */
 .keydoc-list { list-style: none; display: flex; flex-direction: column; gap: var(--sp-1); }
 .keydoc {
@@ -1337,7 +1347,9 @@ body {
 .audit-risk-badge.risk--medio   { color: var(--sev-medio);   background: var(--sev-medio-bg);   border: 1px solid var(--sev-medio-bd); }
 .audit-risk-badge.risk--baixo   { color: var(--sev-ok);      background: var(--sev-ok-bg);      border: 1px solid var(--sev-ok-bd); }
 .audit-score-label { font-size: 11px; font-weight: 600; color: var(--color-text); }
+.audit-stage { font-size: 11px; font-weight: 600; color: var(--color-primary); }
 .audit-findings-count { font-size: 10px; color: var(--color-muted); }
+.audit-stage-note { font-size: 10px; color: var(--color-muted); line-height: 1.5; margin: -4px 0 2px; padding: 0 2px; }
 
 /* Detalhamento do score */
 .audit-breakdown {
@@ -1479,8 +1491,10 @@ body {
 }
 .audit-check--presente .audit-check-icon { color: var(--sev-ok); background: var(--sev-ok-bg); }
 .audit-check--ausente  .audit-check-icon { color: var(--color-muted); background: var(--color-bg); }
+.audit-check--na       .audit-check-icon { color: var(--color-muted); background: var(--color-surface-alt); }
 .audit-check--presente .audit-check-label { color: var(--color-text); }
 .audit-check--ausente  .audit-check-label { color: var(--color-muted); }
+.audit-check--na       .audit-check-label { color: var(--color-border-strong); }
 .audit-check-label { flex: 1; line-height: 1.35; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .audit-check-tag {
   font-size: 8px;
@@ -1492,6 +1506,11 @@ body {
   border: 1px solid var(--sev-alto-bd);
   border-radius: var(--radius-pill);
   padding: 1px 6px;
+}
+.audit-check-tag--future {
+  color: var(--color-muted);
+  background: var(--color-bg);
+  border-color: var(--color-border-strong);
 }
 
 /* Rodapé */

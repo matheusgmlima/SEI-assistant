@@ -904,50 +904,60 @@ function getAllAccessibleDocs(): Document[] {
   return docs;
 }
 
-/** Clica no link de um despacho na árvore — tenta múltiplas estratégias */
+/** É um link/botão de ação (copiar, clipboard) — NÃO abre o documento. */
+function isActionLink(a: Element): boolean {
+  const blob = [
+    a.getAttribute?.("onclick"), a.getAttribute?.("href"),
+    a.getAttribute?.("title"), a.getAttribute?.("aria-label"),
+  ].join(" ");
+  return /copiar|clipboard|copy|writeText|imprimir|download|baixar/i.test(blob);
+}
+
+/** O link/onclick referencia ABRIR/VISUALIZAR um documento com este docId. */
+function opensDocument(a: Element, docId: string): boolean {
+  const href = a.getAttribute?.("href") ?? "";
+  const onclick = a.getAttribute?.("onclick") ?? "";
+  // href direto com a ação de visualizar + id_documento
+  if (new RegExp(`id_documento=${docId}(?![0-9])`).test(href + " " + onclick)) return true;
+  // onclick que abre/visualiza documento contendo o docId isolado
+  if (/documento_visualizar|visualizar_documento|abrirDocumento|infraArvore/i.test(onclick)
+      && new RegExp(`(?<![0-9])${docId}(?![0-9])`).test(onclick)) return true;
+  return false;
+}
+
+/** Clica no link que ABRE um despacho na árvore (evita botões de copiar/clipboard). */
 function clickDespachoInTree(docId: string, titleHint = ""): boolean {
   for (const doc of getAllAccessibleDocs()) {
     try {
-      const anchors = Array.from(doc.querySelectorAll<HTMLAnchorElement>("a"));
+      const anchors = Array.from(doc.querySelectorAll<HTMLAnchorElement>("a")).filter((a) => !isActionLink(a));
 
-      // Estratégia 1: href ou onclick contém id_documento=DOCID
+      // Estratégia 1: link que comprovadamente ABRE o documento
       for (const a of anchors) {
-        const attrs = Array.from(a.attributes).map((x) => x.value).join(" ");
-        if (attrs.includes(`id_documento=${docId}`)) {
+        if (opensDocument(a, docId)) {
           safeClick(a);
-          console.log(`[SEI Assistant] ✓ Clicou despacho ${docId} (estratégia 1)`);
+          console.log(`[SEI Assistant] ✓ Abriu despacho ${docId} (estratégia 1)`);
           return true;
         }
       }
 
-      // Estratégia 2: qualquer atributo contém o docId isolado (onclick com função JS)
-      for (const a of anchors) {
-        const attrs = Array.from(a.attributes).map((x) => x.value).join(" ");
-        if (new RegExp(`(?<![0-9])${docId}(?![0-9])`).test(attrs)) {
-          safeClick(a);
-          console.log(`[SEI Assistant] ✓ Clicou despacho ${docId} (estratégia 2)`);
-          return true;
-        }
-      }
-
-      // Estratégia 3: .infraArvoreNo cujo texto inclui o docId
+      // Estratégia 2: nó da árvore cujo texto inclui o docId → clica no link do NOME
       for (const node of doc.querySelectorAll(".infraArvoreNo")) {
-        if ((node.textContent ?? "").includes(docId)) {
-          const anchor = node.closest<HTMLAnchorElement>("a") ?? node.querySelector<HTMLAnchorElement>("a");
-          if (anchor) { safeClick(anchor); console.log(`[SEI Assistant] ✓ Clicou despacho ${docId} (estratégia 3a)`); return true; }
-          safeClick(node);
-          console.log(`[SEI Assistant] ✓ Clicou despacho ${docId} (estratégia 3b)`);
+        if (!(node.textContent ?? "").includes(docId)) continue;
+        const anchor = (node.closest<HTMLAnchorElement>("a") ?? node.querySelector<HTMLAnchorElement>("a"));
+        if (anchor && !isActionLink(anchor)) {
+          safeClick(anchor);
+          console.log(`[SEI Assistant] ✓ Abriu despacho ${docId} (estratégia 2)`);
           return true;
         }
       }
 
-      // Estratégia 4: texto do link contém docId ou início do título
+      // Estratégia 3: texto do link contém o docId ou início do título (sem botões de ação)
       const hint = titleHint ? titleHint.replace(/despacho\s+\d+\s*/i, "").slice(0, 15).toLowerCase() : "";
       for (const a of anchors) {
         const text = (a.textContent ?? "").toLowerCase();
         if (text.includes(docId) || (hint.length > 4 && text.includes(hint))) {
           safeClick(a);
-          console.log(`[SEI Assistant] ✓ Clicou despacho ${docId} (estratégia 4)`);
+          console.log(`[SEI Assistant] ✓ Abriu despacho ${docId} (estratégia 3)`);
           return true;
         }
       }
@@ -1007,8 +1017,10 @@ async function waitForDespachoContent(docId: string, timeoutMs = 8000): Promise<
   safeStorageRemove(key);
 
   const deadline = Date.now() + timeoutMs;
+  let elapsed = 0;
   while (Date.now() < deadline) {
     await sleep(500);
+    elapsed += 500;
     if (!isContextValid()) return "";
 
     try {
@@ -1023,6 +1035,12 @@ async function waitForDespachoContent(docId: string, timeoutMs = 8000): Promise<
       // 2. Tenta extrair diretamente dos frames acessíveis do top-frame
       const direct = extractDocContentFromAllFrames(docId);
       if (direct.length > 50) return direct;
+
+      // 3. Após ~2,5s, se for um PDF nativo (texto não acessível via DOM), desiste cedo
+      if (elapsed >= 2500 && hasNativePdfViewer()) {
+        console.log(`[SEI Assistant] Documento ${docId}: PDF externo (texto não legível via DOM) — pulando`);
+        return "";
+      }
     } catch {
       // Contexto invalidado durante a espera
       return "";
@@ -1164,7 +1182,7 @@ async function runFullCollection(processId: string) {
         try {
           const clicked = clickDespachoInTree(docId, title);
           if (clicked) {
-            const text = await waitForDespachoContent(docId, 5000);
+            const text = await waitForDespachoContent(docId, 8000);
             console.log(`[SEI Assistant] Documento ${docId}: ${text.length > 0 ? text.length + " chars ✓" : "timeout"}`);
             if (text.length > 50) {
               readCount++;
@@ -1460,41 +1478,75 @@ function trySaveDocUrlTemplate() {
  * o primeiro texto substancial que parece conteúdo de documento SEI.
  */
 function extractDocContentFromAllFrames(idDoc: string): string {
-  function crawlForContent(win: Window, depth = 0): string {
-    if (depth > 4) return "";
+  let best = "";
+  let bestHasId = false;
+
+  // Considera um bloco de texto como candidato a conteúdo de documento
+  function consider(raw: string | null | undefined) {
+    const t = (raw ?? "").replace(/\s+/g, " ").trim();
+    if (t.length < 120 || isRestrictedContent(t)) return;
+    const hasId = t.includes(idDoc);
+    // Prioriza o bloco que contém o nº do documento; senão, o maior bloco textual
+    if ((hasId && !bestHasId) || (hasId === bestHasId && t.length > best.length)) {
+      best = t; bestHasId = hasId;
+    }
+  }
+
+  // Distingue documento (texto corrido) de árvore/menu (muitos links curtos)
+  function looksLikeMenu(el: Element): boolean {
+    const links = el.querySelectorAll("a").length;
+    const txtLen = el.textContent?.length ?? 1;
+    return links > 25 && txtLen / Math.max(links, 1) < 60;
+  }
+
+  function crawl(win: Window, depth = 0) {
+    if (depth > 5) return;
     try {
       const doc = win.document;
 
-      // Seletores específicos do visualizador SEI
+      // PDF pesquisável renderizado com pdf.js — texto fica na camada .textLayer
+      const layers = doc.querySelectorAll('.textLayer, [class*="textLayer"]');
+      if (layers.length) {
+        let pdfText = "";
+        layers.forEach((tl) => { pdfText += " " + (tl.textContent ?? ""); });
+        consider(pdfText);
+      }
+
+      // Containers conhecidos do visualizador SEI (vários nomes possíveis)
       for (const sel of [
         "#divConteudoVisualizacaoInterna",
         "#divConteudoVisualizacao",
+        "#divInfraAreaTelaD",
         ".infraAreaTelaD",
+        "[id*='ConteudoVisualizacao']",
+        "[id*='Visualizacao']",
       ]) {
-        const el = doc.querySelector(sel);
-        if (el?.textContent && el.textContent.trim().length > 80) {
-          const t = el.textContent.replace(/\s+/g, " ").trim();
-          if (!isRestrictedContent(t)) return t.slice(0, 8000);
-        }
+        doc.querySelectorAll(sel).forEach((el) => {
+          if (!looksLikeMenu(el)) consider(el.textContent);
+        });
       }
 
-      // Body fallback — só aceita se contém o docId (confirma que é o doc certo)
-      const body = doc.body?.textContent?.replace(/\s+/g, " ").trim() ?? "";
-      if (body.length > 150 && !isRestrictedContent(body) && body.includes(idDoc)) {
-        return body.slice(0, 5000);
-      }
+      // Body do frame — aceita se NÃO parece menu/árvore (não exige o nº do doc)
+      if (doc.body && !looksLikeMenu(doc.body)) consider(doc.body.textContent);
 
-      // Recursão em frames filhos
       for (let i = 0; i < win.frames.length; i++) {
-        try {
-          const result = crawlForContent(win.frames[i] as Window, depth + 1);
-          if (result) return result;
-        } catch { /* cross-origin */ }
+        try { crawl(win.frames[i] as Window, depth + 1); } catch { /* cross-origin */ }
       }
     } catch { /* ignora */ }
-    return "";
   }
-  return crawlForContent(window);
+
+  crawl(window);
+  return best.slice(0, 8000);
+}
+
+/** Detecta um visualizador de PDF (embed/object/plugin) cujo texto não é acessível via DOM. */
+function hasNativePdfViewer(): boolean {
+  for (const d of getAllAccessibleDocs()) {
+    try {
+      if (d.querySelector('embed[type="application/pdf"], object[type="application/pdf"], iframe[src*=".pdf"], embed[src*=".pdf"]')) return true;
+    } catch { /* cross-origin */ }
+  }
+  return false;
 }
 
 function trySaveDocContent() {
@@ -1521,6 +1573,43 @@ function trySaveDocContent() {
       clearInterval(interval);
     }
   }, 400);
+}
+
+// ─── Incorporação de documentos abertos manualmente ─────────────────────────────
+// Quando o usuário abre um documento (mesmo fora da coleta), o conteúdo capturado
+// é incorporado ao despachosContent do processo atual. Assim, navegar pelos
+// despachos enriquece o contexto da IA — basta regenerar o resumo depois.
+
+const incorporatedDocs = new Set<string>();
+
+function incorporateDocContent(idDoc: string, content: string) {
+  if (!isTopFrame || !isContextValid()) return;
+  if (incorporatedDocs.has(idDoc)) return;
+  const procId = getCurrentProcessId();
+  if (!procId) return;
+
+  chrome.storage.local.get(`proc_${procId}`, (r) => {
+    if (!isContextValid()) return;
+    const details = r[`proc_${procId}`] as ProcessDetails | undefined;
+    if (!details) return;
+
+    const existing = details.despachosContent ?? "";
+    // Se o conteúdo desse documento já está incorporado, não duplica
+    if (existing.includes(idDoc) && existing.length > content.length / 2) {
+      incorporatedDocs.add(idDoc);
+      return;
+    }
+
+    const title = (details.documents ?? []).find((t) => t.includes(idDoc)) ?? `Documento ${idDoc}`;
+    const section = `=== ${title} ===\n${content.slice(0, 5000)}`;
+    const updated: ProcessDetails = {
+      ...details,
+      despachosContent: existing ? `${existing}\n\n${section}` : section,
+    };
+    incorporatedDocs.add(idDoc);
+    safeStorageSet({ [`proc_${procId}`]: updated, [`docIncorporated_${procId}`]: Date.now() });
+    console.log(`[SEI Assistant] Conteúdo do doc ${idDoc} incorporado ao processo ${procId} (${content.length} chars)`);
+  });
 }
 
 // ─── Captura URL do botão ZIP ───────────────────────────────────────────────────
@@ -1725,6 +1814,20 @@ function startObserver() {
   });
   observer.observe(document.body, { childList: true, subtree: true });
   window.addEventListener("popstate", checkAndNotify);
+
+  // Top frame: incorpora ao processo o conteúdo de qualquer documento visualizado
+  // (inclusive abertos manualmente pelo usuário) → enriquece o resumo da IA.
+  if (isTopFrame && isContextValid()) {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== "local" || !isContextValid()) return;
+      for (const [key, change] of Object.entries(changes)) {
+        if (!key.startsWith("docContent_")) continue;
+        const idDoc = key.slice("docContent_".length);
+        const content = change.newValue as string | undefined;
+        if (content && content.length > 80) incorporateDocContent(idDoc, content);
+      }
+    });
+  }
 }
 
 if (document.readyState === "loading") {

@@ -73,10 +73,69 @@ export const SAD_COLUMNS: SadColumn[] = [
 // Override do usuário: qualquer coluna pode ser editada manualmente e guardada
 export type SadOverrides = Record<string, string>;
 
+// Padrões pessoais aplicados automaticamente aos campos manuais vazios
+export interface SadDefaults {
+  responsavelSad?: string;
+  prioridade?: string;
+  situacaoPca?: string;
+}
+
 export type SadFieldSource = "auto" | "inferido" | "manual" | "vazio";
 
 // Campos obrigatórios (★ na planilha) — usados para marcar "pronto"
 export const SAD_REQUIRED = ["unidadeDemandante", "processoSei", "evento", "dataRecebSad", "statusAtual", "responsavelSad", "faseAtual"];
+
+// Campos que devem conter uma data (dd/mm/aaaa)
+const SAD_DATE_FIELDS = new Set([
+  "dataVigencia", "dataRecebSad", "dataFormalizacao",
+  "entrada1", "saida1", "entrada2", "saida2", "entrada3", "saida3",
+]);
+
+/** Verifica um campo e retorna um aviso se o valor parece incorreto (ou null). */
+export function sadFieldIssue(row: SadRow, key: string): string | null {
+  const v = (row.values[key] ?? "").trim();
+  if (!v) return null;
+
+  // Campos de data: precisam ter formato de data
+  if (SAD_DATE_FIELDS.has(key)) {
+    if (!/\d{1,2}\/\d{1,2}\/\d{2,4}/.test(v)) return "não parece uma data (use dd/mm/aaaa)";
+    return null;
+  }
+
+  // Valor estimado: precisa ser monetário e plausível
+  if (key === "valorEstimado") {
+    const digits = v.replace(/[^\d]/g, "");
+    if (!digits) return "não parece um valor em reais";
+    const num = Number(v.replace(/[^\d,.-]/g, "").replace(/\.(?=\d{3})/g, "").replace(",", "."));
+    if (!isFinite(num) || num <= 0) return "não parece um valor em reais";
+    if (num < 100) return "valor muito baixo — pode ser um nº de processo/contrato";
+    return null;
+  }
+
+  // Contratada: nome muito curto ou só números é suspeito
+  if (key === "contratada") {
+    if (/^\d+$/.test(v)) return "parece um número, não um nome de empresa";
+    if (v.length < 4) return "nome muito curto — confira";
+    return null;
+  }
+
+  // Nº de contrato/instrumento: deve conter dígitos
+  if ((key === "numContrato" || key === "numInstrumento") && !/\d/.test(v)) {
+    return "deveria conter o número";
+  }
+  return null;
+}
+
+/** Lista todos os avisos de validação de uma linha. */
+export function validateSadRow(row: SadRow): { key: string; message: string }[] {
+  const out: { key: string; message: string }[] = [];
+  for (const col of SAD_COLUMNS) {
+    if (col.calc) continue;
+    const msg = sadFieldIssue(row, col.key);
+    if (msg) out.push({ key: col.key, message: msg });
+  }
+  return out;
+}
 
 // Tipo de input e lista de cada campo (para a UI de edição)
 export const SAD_FIELD_META: Record<string, { type: "select" | "text" | "area"; list?: readonly string[] }> = {
@@ -173,7 +232,7 @@ function parseValor(raw: string | null): string {
 
 // ─── Mapeamento principal ────────────────────────────────────────────────────────
 
-export function mapProcessToSad(details: ProcessDetails, overrides: SadOverrides = {}): SadRow {
+export function mapProcessToSad(details: ProcessDetails, overrides: SadOverrides = {}, defaults: SadDefaults = {}): SadRow {
   const values: Record<string, string> = {};
   const sources: Record<string, SadFieldSource> = {};
   const set = (key: string, val: string, src: SadFieldSource) => { values[key] = val; sources[key] = val ? src : "vazio"; };
@@ -266,6 +325,11 @@ export function mapProcessToSad(details: ProcessDetails, overrides: SadOverrides
   // Campos sem inferência automática — começam vazios (preenchíveis pelo usuário)
   for (const k of ["situacaoPca", "codigoPca", "responsavelSad", "prioridade", "observacoes"]) {
     if (!(k in values)) set(k, "", "vazio");
+  }
+
+  // Aplica PADRÕES pessoais nos campos manuais ainda vazios (auto-preenchimento)
+  for (const [k, v] of Object.entries(defaults)) {
+    if (v && !values[k]) { values[k] = v; sources[k] = "manual"; }
   }
 
   // Aplica overrides do usuário sobre QUALQUER campo (corrige/completa o inferido)

@@ -10,7 +10,7 @@ import type {
 } from "@shared/index";
 import {
   buildChecklist, localFindings, computeScore, mergeFindings, detectCategory,
-  parseAuditDate,
+  parseAuditDate, detectStage, STAGE_LABEL,
 } from "@shared/index";
 import {
   upsertProcesso,
@@ -399,6 +399,7 @@ async function runAudit(config: AiConfig | undefined, details: ProcessDetails): 
 
   const findings = mergeFindings(regras, aiFindings);
   const { score, riskLevel, breakdown } = computeScore(checklist, findings);
+  const stage = detectStage(details);
 
   return {
     processId: details.id,
@@ -409,6 +410,8 @@ async function runAudit(config: AiConfig | undefined, details: ProcessDetails): 
     checklist,
     aiSummary,
     breakdown,
+    stage,
+    stageLabel: STAGE_LABEL[stage],
     generatedAt: Date.now(),
   };
 }

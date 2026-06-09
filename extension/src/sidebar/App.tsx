@@ -956,12 +956,18 @@ function AuditPanel({
         </div>
         <div className="audit-score-info">
           <span className={`audit-risk-badge ${risk.cls}`}>{risk.label}</span>
-          <span className="audit-score-label">Conformidade documental</span>
+          {audit.stageLabel && <span className="audit-stage">📍 {audit.stageLabel}</span>}
           <span className="audit-findings-count">
-            {presentes}/{totalCheck} documentos · {ruleFindings.length} {ruleFindings.length === 1 ? "achado" : "achados"} de regra
+            {presentes}/{totalCheck} documentos · {ruleFindings.length} {ruleFindings.length === 1 ? "achado" : "achados"}
           </span>
         </div>
       </div>
+
+      {audit.stageLabel && (
+        <p className="audit-stage-note">
+          A nota considera apenas os documentos esperados para a fase atual ({audit.stageLabel.toLowerCase()}). Documentos de fases seguintes aparecem como “aguardando fase” e não descontam pontos.
+        </p>
+      )}
 
       {/* Como o score foi calculado (transparência) */}
       {bd && (
@@ -1019,11 +1025,12 @@ function AuditPanel({
           {audit.checklist.map((c, i) => (
             <li key={i} className={`audit-check audit-check--${c.status}`}>
               <span className="audit-check-icon">
-                {c.status === "presente" ? "✓" : c.critical ? "✗" : "○"}
+                {c.status === "presente" ? "✓" : c.status === "na" ? "◷" : c.critical ? "✗" : "○"}
               </span>
               <span className="audit-check-label">
                 {c.label}
                 {c.status === "ausente" && c.critical && <span className="audit-check-tag">obrigatório</span>}
+                {c.status === "na" && <span className="audit-check-tag audit-check-tag--future">aguardando fase</span>}
               </span>
             </li>
           ))}
@@ -1480,6 +1487,21 @@ function ProcessDetailScreen({
                   </div>
                 )}
               </>
+            );
+          })()}
+
+          {/* Diagnóstico de leitura de conteúdo */}
+          {(() => {
+            const content = details.despachosContent ?? "";
+            const nDocs = (content.match(/^===\s/gm) || []).length;
+            const chars = content.length;
+            const ok = chars > 300;
+            return (
+              <div className={`read-status ${ok ? "read-status--ok" : "read-status--warn"}`}>
+                {ok
+                  ? `📄 ${nDocs} documento(s) lido(s) · ${(chars / 1000).toFixed(1)} mil caracteres de conteúdo`
+                  : "⚠ Pouco ou nenhum conteúdo de documento lido — abra os despachos no SEI ou recolha o processo."}
+              </div>
             );
           })()}
 

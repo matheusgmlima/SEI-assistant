@@ -7,7 +7,7 @@
  */
 
 import type { ProcessDetails, AndamentoEntry } from "@shared/index";
-import { buildChecklist, localFindings, computeScore, mergeFindings, detectCategory } from "@shared/index";
+import { buildChecklist, localFindings, computeScore, mergeFindings, detectCategory, detectStage, STAGE_LABEL } from "@shared/index";
 
 function a(date: string, unit: string, description: string): AndamentoEntry {
   return { date, unit, description };
@@ -17,9 +17,11 @@ function makeAudit(d: ProcessDetails): ProcessDetails["audit"] {
   const checklist = buildChecklist(d);
   const findings = mergeFindings(localFindings(d, checklist), []);
   const { score, riskLevel, breakdown } = computeScore(checklist, findings);
+  const stage = detectStage(d);
   return {
     processId: d.id, category: detectCategory(d), score, riskLevel,
-    findings, checklist, aiSummary: null, breakdown, generatedAt: Date.now(),
+    findings, checklist, aiSummary: null, breakdown,
+    stage, stageLabel: STAGE_LABEL[stage], generatedAt: Date.now(),
   };
 }
 

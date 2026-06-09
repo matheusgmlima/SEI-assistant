@@ -33,9 +33,10 @@ export interface AuditFinding {
 
 export interface ChecklistItem {
   label: string;
-  status: "presente" | "ausente" | "na";
+  status: "presente" | "ausente" | "na"; // na = ainda não esperado para a fase atual
   docRef: string | null;  // título do documento que satisfez a regra
   critical: boolean;      // se a ausência representa risco alto
+  phase?: number;         // estágio em que o documento passa a ser esperado
 }
 
 export interface ScoreBreakdown {
@@ -56,6 +57,8 @@ export interface AuditResult {
   checklist: ChecklistItem[];
   aiSummary: string | null;
   breakdown?: ScoreBreakdown; // como o score foi composto (transparência)
+  stage?: number;             // estágio detectado (1-4)
+  stageLabel?: string;        // rótulo do estágio
   generatedAt: number;
 }
 
@@ -142,42 +145,70 @@ export function detectCategory(details: ProcessDetails): ProcessCategory {
   return CONTRATACAO_HINTS.test(haystack) ? "contratacao" : "generico";
 }
 
+// ─── Estágio do processo (para auditoria sensível à fase) ─────────────────────────
+// 1 = preparatória · 2 = externa/seleção · 3 = formalizada · 4 = encerrado
+
+export const STAGE_LABEL: Record<number, string> = {
+  1: "Fase preparatória",
+  2: "Fase externa / seleção",
+  3: "Contratação formalizada",
+  4: "Encerrado",
+};
+
+export function detectStage(details: ProcessDetails): number {
+  const docs = (details.documents.join(" ") + " " + (details.description ?? "")).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  const st = deriveStatus(details);
+  if (st.concluido) return 4;
+  if (/contrato|empenho|ata de registro|ordem de servi|ordem de forneci|extrato|publicac/.test(docs)) return 3;
+  if (/edital|preg[ãa]o|sessao|disputa|homologa|adjudica|autoriza|parecer|ratifica/.test(docs)) return 2;
+  return 1; // só DFD/TR/pesquisa → ainda em instrução inicial
+}
+
 // ─── Regras de documento esperado ────────────────────────────────────────────────
+// `phase` = estágio a partir do qual o documento passa a ser esperado.
 
 interface DocRule {
   label: string;
   re: RegExp;
   critical: boolean;
+  phase: number;
 }
 
 const CONTRATACAO_RULES: DocRule[] = [
-  { label: "Documento de Formalização da Demanda (DFD)", re: /\bDFD\b|formaliza[çc][ãa]o d[ae] demanda/i, critical: false },
-  { label: "Termo de Referência / Projeto Básico",        re: /termo de refer|projeto b[áa]sico/i, critical: true },
-  { label: "Pesquisa / Estimativa de Preços",             re: /pesquisa de pre|estimativa|cota[çc][ãa]o|composi[çc][ãa]o de pre|mapa de pre/i, critical: true },
-  { label: "Parecer / Análise Jurídica",                  re: /parecer|jur[íi]dic|assessoria jur|nota t[ée]cnica/i, critical: true },
-  { label: "Autorização / Ratificação / Homologação",     re: /autoriza|ratifica|homologa|adjudica/i, critical: true },
-  { label: "Nota de Empenho",                             re: /empenho/i, critical: false },
-  { label: "Contrato / Instrumento Contratual",           re: /contrato|instrumento contratual|minuta contratual|ordem de servi/i, critical: false },
-  { label: "Publicação / Extrato (DOE)",                  re: /publica|extrato|di[áa]rio oficial|\bDOE\b|\bDJE\b/i, critical: false },
+  { label: "Documento de Formalização da Demanda (DFD)", re: /\bDFD\b|formaliza[çc][ãa]o d[ae] demanda/i, critical: false, phase: 1 },
+  { label: "Termo de Referência / Projeto Básico",        re: /termo de refer|projeto b[áa]sico/i, critical: true, phase: 1 },
+  { label: "Pesquisa / Estimativa de Preços",             re: /pesquisa de pre|estimativa|cota[çc][ãa]o|composi[çc][ãa]o de pre|mapa de pre/i, critical: true, phase: 1 },
+  { label: "Parecer / Análise Jurídica",                  re: /parecer|jur[íi]dic|assessoria jur|nota t[ée]cnica/i, critical: true, phase: 2 },
+  { label: "Autorização / Ratificação / Homologação",     re: /autoriza|ratifica|homologa|adjudica/i, critical: true, phase: 2 },
+  { label: "Nota de Empenho",                             re: /empenho/i, critical: false, phase: 3 },
+  { label: "Contrato / Instrumento Contratual",           re: /contrato|instrumento contratual|minuta contratual|ordem de servi/i, critical: false, phase: 3 },
+  { label: "Publicação / Extrato (DOE)",                  re: /publica|extrato|di[áa]rio oficial|\bDOE\b|\bDJE\b/i, critical: false, phase: 3 },
 ];
 
 const GENERICO_RULES: DocRule[] = [
-  { label: "Despacho de abertura / instrução", re: /despacho|abertura|instru/i, critical: false },
-  { label: "Manifestação / Parecer",           re: /parecer|manifesta|nota t[ée]cnica|informa[çc][ãa]o/i, critical: false },
-  { label: "Decisão / Conclusão",              re: /decis[ãa]o|conclus|delibera|homologa/i, critical: false },
+  { label: "Despacho de abertura / instrução", re: /despacho|abertura|instru/i, critical: false, phase: 1 },
+  { label: "Manifestação / Parecer",           re: /parecer|manifesta|nota t[ée]cnica|informa[çc][ãa]o/i, critical: false, phase: 2 },
+  { label: "Decisão / Conclusão",              re: /decis[ãa]o|conclus|delibera|homologa/i, critical: false, phase: 3 },
 ];
 
 export function buildChecklist(details: ProcessDetails): ChecklistItem[] {
   const cat = detectCategory(details);
   const rules = cat === "contratacao" ? CONTRATACAO_RULES : GENERICO_RULES;
+  const stage = detectStage(details);
 
   return rules.map((rule) => {
     const found = details.documents.find((d) => rule.re.test(d));
+    // status: presente / ausente (cobrado nesta fase) / na (ainda não esperado)
+    let status: ChecklistItem["status"];
+    if (found) status = "presente";
+    else if (rule.phase > stage) status = "na"; // documento de fase futura — não cobra
+    else status = "ausente";
     return {
       label: rule.label,
-      status: found ? "presente" : "ausente",
+      status,
       docRef: found ?? null,
       critical: rule.critical,
+      phase: rule.phase,
     };
   });
 }
