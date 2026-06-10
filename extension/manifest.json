@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SEI Assistant — TJPE",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Sistema de apoio ao SEI para o TJPE",
 
   "permissions": [

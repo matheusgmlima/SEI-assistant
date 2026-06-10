@@ -16,6 +16,26 @@ function isContextValid(): boolean {
   catch { return false; }
 }
 
+// Rede de segurança: quando a extensão é recarregada/atualizada, o content script
+// antigo (órfão) na aba do SEI pode lançar "Extension context invalidated" a partir
+// de listeners/observers já agendados. Esse erro é sempre benigno — silenciamos
+// APENAS ele para não poluir o console (um F5 na aba já recarrega o script novo).
+const isCtxInvalidated = (msg: unknown) =>
+  typeof msg === "string" && /Extension context invalidated|context invalidated/i.test(msg);
+
+window.addEventListener("error", (e) => {
+  if (isCtxInvalidated(e.message) || isCtxInvalidated(String(e.error))) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }
+}, true);
+
+window.addEventListener("unhandledrejection", (e) => {
+  if (isCtxInvalidated(String(e.reason)) || isCtxInvalidated((e.reason as { message?: string })?.message)) {
+    e.preventDefault();
+  }
+});
+
 function safeStorageSet(data: Record<string, unknown>) {
   if (!isContextValid()) return;
   try { chrome.storage.local.set(data); }
@@ -1007,6 +1027,34 @@ function isDocRestrictedInTree(docId: string): boolean {
 }
 
 /**
+ * Detecta, ANTES de abrir, se o documento é um arquivo externo não-textual (PDF, imagem,
+ * planilha, zip…) pelo ícone de tipo na árvore. Esses não têm texto legível via DOM —
+ * abri-los só gasta tempo até o timeout. Retorna a extensão detectada ou null.
+ */
+function getExternalFileType(docId: string): string | null {
+  const EXT_RE = /\b(pdf|docx?|xlsx?|pptx?|odt|ods|zip|rar|7z|mp[34]|m4a|wav|avi|mov|mkv)\b/;
+  for (const doc of getAllAccessibleDocs()) {
+    try {
+      for (const a of doc.querySelectorAll<HTMLAnchorElement>("a")) {
+        const attrs = Array.from(a.attributes).map((x) => x.value).join(" ");
+        if (!new RegExp(`(?<![0-9])${docId}(?![0-9])`).test(attrs)) continue;
+
+        // O ícone de tipo de arquivo fica numa <img> dentro do nó da árvore
+        const parent = a.closest("span, div, li, td") ?? a.parentElement;
+        const imgs = parent?.querySelectorAll<HTMLImageElement>("img") ?? [];
+        for (const img of imgs) {
+          const blob = `${img.getAttribute("src") ?? ""} ${img.getAttribute("alt") ?? ""} ${img.getAttribute("title") ?? ""}`.toLowerCase();
+          const m = blob.match(EXT_RE);
+          if (m) return m[1];
+        }
+        return null; // achou o link, mas sem ícone de arquivo externo (provável doc interno legível)
+      }
+    } catch { /* ignora frame */ }
+  }
+  return null;
+}
+
+/**
  * Aguarda conteúdo do documento via storage.
  * O content script rodando no frame do documento salva em docContent_${docId}.
  * Mais confiável que tentar acessar o iframe diretamente (evita problemas cross-frame).
@@ -1036,8 +1084,9 @@ async function waitForDespachoContent(docId: string, timeoutMs = 8000): Promise<
       const direct = extractDocContentFromAllFrames(docId);
       if (direct.length > 50) return direct;
 
-      // 3. Após ~2,5s, se for um PDF nativo (texto não acessível via DOM), desiste cedo
-      if (elapsed >= 2500 && hasNativePdfViewer()) {
+      // 3. Após ~1s, se for um PDF nativo (texto não acessível via DOM), desiste cedo.
+      //    (Rede de segurança — a maioria dos PDFs já é pulada antes de abrir, pelo ícone da árvore.)
+      if (elapsed >= 1000 && hasNativePdfViewer()) {
         console.log(`[SEI Assistant] Documento ${docId}: PDF externo (texto não legível via DOM) — pulando`);
         return "";
       }
@@ -1169,6 +1218,14 @@ async function runFullCollection(processId: string) {
         // Pula documentos restritos sem tentar clicar
         if (isDocRestrictedInTree(docId)) {
           console.log(`[SEI Assistant] Documento ${docId}: restrito — pulando`);
+          continue;
+        }
+
+        // Arquivo externo (PDF, imagem, planilha…): texto não é legível via DOM.
+        // O nome já está na lista de documentos — pula a leitura sem abrir/esperar timeout.
+        const fileExt = getExternalFileType(docId);
+        if (fileExt) {
+          console.log(`[SEI Assistant] Documento ${docId}: arquivo .${fileExt} externo — nome registrado, leitura pulada`);
           continue;
         }
 
@@ -1317,40 +1374,45 @@ function stopQueue() {
 // Solução: encontrar e clicar num link existente do SEI (que tem hash fresco do servidor).
 
 function navigateToControleProcessos(): boolean {
-  // Procura em TODOS os frames acessíveis (menu fica no top-frame; ícones podem
-  // estar em iframes filhos da barra superior)
+  // Clica em qualquer link/ícone REAL do SEI que leva ao Controle de Processos.
+  // Esses links carregam o infra_hash fresco do servidor — clicar é seguro.
+  // NUNCA construímos a URL manualmente (hash de uso único → deslogaria).
+  const isRealSeiLink = (href: string) =>
+    /controlador\.php/i.test(href) && /acao=procedimento_controlar/i.test(href);
+
   for (const doc of getAllAccessibleDocs()) {
     try {
-      // Estratégia 1: link direto com href contendo a ação E infra_hash válido
-      const anchors = doc.querySelectorAll<HTMLAnchorElement>("a[href*='procedimento_controlar']");
-      for (const a of anchors) {
-        const href = a.getAttribute("href") ?? "";
-        if (href.includes("infra_hash=") && !href.includes("infra_hash=&")) {
-          console.log("[SEI Assistant] Navegando via link existente:", href.slice(0, 80));
-          safeClick(a);
+      // Estratégia 1: link <a> real para procedimento_controlar (prioriza com hash)
+      const anchors = Array.from(doc.querySelectorAll<HTMLAnchorElement>("a[href*='procedimento_controlar']"))
+        .filter((a) => isRealSeiLink(a.getAttribute("href") ?? ""));
+      if (anchors.length) {
+        const withHash = anchors.find((a) => (a.getAttribute("href") ?? "").includes("infra_hash="));
+        const target = withHash ?? anchors[0];
+        console.log("[SEI Assistant] Navegando via link de Controle de Processos");
+        safeClick(target);
+        return true;
+      }
+
+      // Estratégia 2: ícone/imagem da barra superior com title/alt "Controle de Processos"
+      const iconEls = doc.querySelectorAll<HTMLElement>(
+        "[title*='Controle de Processos'], [alt*='Controle de Processos'], img[title*='Controle de Processos']"
+      );
+      for (const el of iconEls) {
+        const anchor = el.closest<HTMLAnchorElement>("a") ?? (el.tagName === "A" ? (el as HTMLAnchorElement) : null);
+        if (anchor) {
+          console.log("[SEI Assistant] Navegando via ícone da barra superior");
+          safeClick(anchor);
           return true;
         }
       }
 
-      // Estratégia 2: ícone da barra superior (≡ Controle de Processos) com onclick
-      const onclickEls = doc.querySelectorAll<HTMLElement>(
-        "[onclick*='procedimento_controlar'], [title*='Controle de Processos'], [alt*='Controle de Processos']"
-      );
-      for (const el of onclickEls) {
-        const anchor = el.tagName === "A" ? (el as HTMLAnchorElement) : el.closest("a");
-        const onclick = el.getAttribute("onclick") ?? anchor?.getAttribute("onclick") ?? "";
-        const href = anchor?.getAttribute("href") ?? "";
-        if (onclick.includes("infra_hash") || href.includes("infra_hash=")) {
-          console.log("[SEI Assistant] Navegando via ícone da barra superior");
-          safeClick(anchor ?? el);
-          return true;
-        }
-        // Se for um link válido sem hash visível (ex: onclick com função JS), tenta o clique
-        if (anchor || onclick) {
-          console.log("[SEI Assistant] Navegando via onclick/ícone (sem hash visível)");
-          safeClick(anchor ?? el);
-          return true;
-        }
+      // Estratégia 3: qualquer elemento com onclick para procedimento_controlar
+      const onclickEl = doc.querySelector<HTMLElement>("[onclick*='procedimento_controlar']");
+      if (onclickEl) {
+        const anchor = onclickEl.closest<HTMLAnchorElement>("a") ?? onclickEl;
+        console.log("[SEI Assistant] Navegando via onclick");
+        safeClick(anchor);
+        return true;
       }
     } catch { /* frame inacessível */ }
   }
@@ -1588,7 +1650,7 @@ function incorporateDocContent(idDoc: string, content: string) {
   const procId = getCurrentProcessId();
   if (!procId) return;
 
-  chrome.storage.local.get(`proc_${procId}`, (r) => {
+  storageGet(`proc_${procId}`).then((r) => {
     if (!isContextValid()) return;
     const details = r[`proc_${procId}`] as ProcessDetails | undefined;
     if (!details) return;
@@ -1609,7 +1671,7 @@ function incorporateDocContent(idDoc: string, content: string) {
     incorporatedDocs.add(idDoc);
     safeStorageSet({ [`proc_${procId}`]: updated, [`docIncorporated_${procId}`]: Date.now() });
     console.log(`[SEI Assistant] Conteúdo do doc ${idDoc} incorporado ao processo ${procId} (${content.length} chars)`);
-  });
+  }).catch(() => { /* contexto invalidado */ });
 }
 
 // ─── Captura URL do botão ZIP ───────────────────────────────────────────────────
@@ -1819,13 +1881,15 @@ function startObserver() {
   // (inclusive abertos manualmente pelo usuário) → enriquece o resumo da IA.
   if (isTopFrame && isContextValid()) {
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== "local" || !isContextValid()) return;
-      for (const [key, change] of Object.entries(changes)) {
-        if (!key.startsWith("docContent_")) continue;
-        const idDoc = key.slice("docContent_".length);
-        const content = change.newValue as string | undefined;
-        if (content && content.length > 80) incorporateDocContent(idDoc, content);
-      }
+      try {
+        if (area !== "local" || !isContextValid()) return;
+        for (const [key, change] of Object.entries(changes)) {
+          if (!key.startsWith("docContent_")) continue;
+          const idDoc = key.slice("docContent_".length);
+          const content = change.newValue as string | undefined;
+          if (content && content.length > 80) incorporateDocContent(idDoc, content);
+        }
+      } catch { /* contexto invalidado — content script órfão */ }
     });
   }
 }

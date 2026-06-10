@@ -26,7 +26,7 @@ body {
 *::-webkit-scrollbar-track { background: transparent; }
 
 /* Header limpo */
-.sad-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 22px; animation: slideUp .3s ease both; }
+.sad-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 22px; animation: slideUp .3s ease both; position: relative; z-index: 40; }
 .sad-title { font-size: 24px; font-weight: 700; color: var(--pd); letter-spacing: -0.01em; display: flex; align-items: center; gap: 10px; }
 .sad-title::before { content: ""; width: 5px; height: 24px; border-radius: 99px; background: linear-gradient(180deg, var(--accent), var(--p)); }
 .sad-sub { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
@@ -45,8 +45,8 @@ body {
 .kebab { position: relative; }
 .kebab-btn { width: 38px; height: 38px; border-radius: 9px; border: 1px solid var(--border-strong); background: #fff; color: var(--text-soft); font-size: 18px; cursor: pointer; line-height: 1; }
 .kebab-btn:hover { background: var(--bg); }
-.kebab-backdrop { position: fixed; inset: 0; z-index: 20; }
-.kebab-menu { position: absolute; right: 0; top: 44px; z-index: 21; background: #fff; border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 6px 24px rgba(15,35,70,.14); padding: 6px; min-width: 190px; }
+.kebab-backdrop { position: fixed; inset: 0; z-index: 60; }
+.kebab-menu { position: absolute; right: 0; top: 44px; z-index: 61; background: #fff; border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 6px 24px rgba(15,35,70,.18); padding: 6px; min-width: 190px; animation: popIn .16s ease both; }
 .kebab-item { display: block; width: 100%; text-align: left; background: none; border: none; font-size: 12.5px; color: var(--text); padding: 9px 12px; border-radius: 7px; cursor: pointer; }
 .kebab-item:hover { background: var(--bg); }
 .kebab-sep { height: 1px; background: var(--border); margin: 5px 4px; }
@@ -204,6 +204,18 @@ body {
 .sad-empty-desc { font-size: 13px; color: var(--muted); max-width: 360px; margin: 0 auto; line-height: 1.5; }
 .sad-empty-note { font-size: 11px; color: var(--border-strong); margin-top: 10px; }
 
+/* Aviso de processos ocultos (só visitados) */
+.sad-hidden-note {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  font-size: 12px; color: var(--text-soft); background: var(--surface);
+  border: 1px dashed var(--border-strong); border-radius: 10px; padding: 9px 14px; margin-bottom: 12px;
+}
+.sad-hidden-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.sad-hidden-actions button { font-size: 11.5px; font-weight: 600; color: var(--p); background: none; border: 1px solid var(--border-strong); border-radius: 7px; padding: 5px 11px; cursor: pointer; }
+.sad-hidden-actions button:hover { background: var(--bg); }
+.sad-hidden-clear { color: var(--warn) !important; border-color: #FED7AA !important; }
+.sad-hidden-clear:hover { background: #FFF7ED !important; }
+
 .sad-list { display: flex; flex-direction: column; gap: 10px; }
 .sad-card {
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
@@ -280,9 +292,11 @@ body {
 .sad-field-issue-msg { font-size: 10.5px; color: #B91C1C; font-weight: 600; margin-top: 1px; }
 
 /* Controle de lançamento */
-.sad-launch { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--border); }
+.sad-launch { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--border); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .sad-launch-check { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; color: var(--text-soft); cursor: pointer; }
 .sad-launch-check input { width: 16px; height: 16px; cursor: pointer; accent-color: var(--ok); }
+.sad-remove { flex-shrink: 0; font-size: 11.5px; font-weight: 600; color: var(--muted); background: none; border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; cursor: pointer; transition: all .15s; }
+.sad-remove:hover { color: #B91C1C; border-color: #FCA5A5; background: #FEF2F2; }
 
 /* bolinha de origem (campos sem atenção) */
 .src-tag { width: 7px; height: 7px; border-radius: 50%; margin-left: auto; flex-shrink: 0; }

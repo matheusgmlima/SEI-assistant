@@ -63,7 +63,25 @@ function useItems() {
     });
   }
 
-  return { procs, overrides, loaded, setField, clearOverrides, reload, refreshedAt };
+  // Remove processos da extensão (storage) por completo
+  function removeProcs(ids: string[]) {
+    const keys: string[] = [];
+    for (const id of ids) {
+      keys.push(`proc_${id}`, `sadOverrides_${id}`, `qa_${id}`, `docIncorporated_${id}`,
+        `historicoUrl_${id}`, `procInternalId_${id}`, `sadLaunched_${id}`);
+    }
+    chrome.storage.local.remove(keys);
+    setProcs((prev) => prev.filter((p) => !ids.includes(p.id)));
+    // limpa do mapa de "lançados" também
+    chrome.storage.local.get("sadLaunched", (r) => {
+      const map = (r.sadLaunched as Record<string, string>) ?? {};
+      let changed = false;
+      for (const id of ids) if (id in map) { delete map[id]; changed = true; }
+      if (changed) chrome.storage.local.set({ sadLaunched: map });
+    });
+  }
+
+  return { procs, overrides, loaded, setField, clearOverrides, removeProcs, reload, refreshedAt };
 }
 
 // Hook: padrões pessoais (auto-preenchimento dos campos manuais)
@@ -107,7 +125,7 @@ function useLaunched() {
 }
 
 function ControleSad() {
-  const { procs, overrides, loaded, setField, clearOverrides, reload, refreshedAt } = useItems();
+  const { procs, overrides, loaded, setField, clearOverrides, removeProcs, reload, refreshedAt } = useItems();
   const { defaults, save: saveDefaults } = useDefaults();
   const { launched, toggle: toggleLaunched, setMany: setManyLaunched } = useLaunched();
   const [onlyIncomplete, setOnlyIncomplete] = useState(false);
@@ -117,6 +135,7 @@ function ControleSad() {
   const [focusIds, setFocusIds] = useState<string[] | null>(null); // ids no modo foco
   const [showTut, setShowTut] = useState(false);        // tutorial / como usar
   const [lastCopied, setLastCopied] = useState<string[]>([]); // ids da última cópia
+  const [showHidden, setShowHidden] = useState(false);  // revelar processos sem dados
 
   // Mostra o tutorial automaticamente na primeira visita
   useEffect(() => {
@@ -141,28 +160,36 @@ function ControleSad() {
     [procs, overrides, defaults]
   );
 
-  const visible = onlyIncomplete ? items.filter((i) => i.row.missingRequired.length > 0) : items;
-  const completos = items.filter((i) => i.row.missingRequired.length === 0).length;
-  // progresso total de campos manuais ainda pendentes
-  const totalPendentes = items.reduce((acc, i) => acc + i.row.missingRequired.length, 0);
-  // processos que precisam de atenção (preencher ou conferir) — alvo do modo foco
-  const pendentes = items.filter((i) => hasPending(i.row));
+  // processos "sem dados" — só visitados no SEI, sem objeto/resumo (ocultos por padrão)
+  const semDados = useMemo(() => items.filter((i) => !(i.row.values.objeto || "").trim()), [items]);
+  // base exibida: esconde os "sem dados" a menos que o usuário peça para mostrar
+  const base = useMemo(
+    () => (showHidden ? items : items.filter((i) => (i.row.values.objeto || "").trim())),
+    [items, showHidden]
+  );
 
-  // Resumo agregado para o painel do topo
+  const visible = onlyIncomplete ? base.filter((i) => i.row.missingRequired.length > 0) : base;
+  const completos = base.filter((i) => i.row.missingRequired.length === 0).length;
+  // progresso total de campos manuais ainda pendentes
+  const totalPendentes = base.reduce((acc, i) => acc + i.row.missingRequired.length, 0);
+  // processos que precisam de atenção (preencher ou conferir) — alvo do modo foco
+  const pendentes = base.filter((i) => hasPending(i.row));
+
+  // Resumo agregado para o painel do topo (só processos exibidos)
   const summary = useMemo(() => {
     let total = 0;
     const porModalidade: Record<string, number> = {};
     let comAviso = 0;
-    for (const it of items) {
+    for (const it of base) {
       const num = Number((it.row.values.valorEstimado ?? "").replace(/[^\d,.-]/g, "").replace(/\.(?=\d{3})/g, "").replace(",", "."));
       if (isFinite(num) && num > 0) total += num;
       const mod = it.row.values.modalidade || "—";
       porModalidade[mod] = (porModalidade[mod] ?? 0) + 1;
       if (validateSadRow(it.row).length > 0) comAviso++;
     }
-    const naoLancados = items.filter((i) => !launched[i.id]).length;
+    const naoLancados = base.filter((i) => !launched[i.id]).length;
     return { total, porModalidade, comAviso, naoLancados };
-  }, [items, launched]);
+  }, [base, launched]);
 
   function copyTsv(list: Item[]) {
     navigator.clipboard.writeText(rowsToTsv(list.map((i) => i.row))).then(() => {
@@ -188,12 +215,12 @@ function ControleSad() {
       <header className="sad-header">
         <div className="sad-header-left">
           <h1 className="sad-title">Controle SAD</h1>
-          {items.length > 0 && (
-            <p className="sad-sub">{items.length} processos · {completos} prontos · {new Date(refreshedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</p>
+          {base.length > 0 && (
+            <p className="sad-sub">{base.length} processos · {completos} prontos · {new Date(refreshedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</p>
           )}
         </div>
         <div className="sad-actions">
-          {items.length > 0 && (
+          {base.length > 0 && (
             <>
               <button className="sad-btn sad-btn-focus" onClick={() => setPicking(true)}>🎯 Revisar</button>
               <button className="sad-btn sad-btn-primary" onClick={() => copyTsv(visible)} disabled={visible.length === 0}>
@@ -210,9 +237,14 @@ function ControleSad() {
                 { sep: true },
                 { label: "Zerar todas as edições", onClick: () => {
                   if (confirm("Apagar todas as suas edições manuais? Os campos voltam ao valor sugerido pelo assistente.")) {
-                    clearOverrides(items.map((i) => i.id));
+                    clearOverrides(base.map((i) => i.id));
                   }
                 } },
+                ...(semDados.length > 0 ? [{ label: `Limpar ${semDados.length} processo(s) sem dados`, onClick: () => {
+                  if (confirm(`Remover ${semDados.length} processo(s) sem objeto/resumo? São processos apenas visitados no SEI, sem coleta completa.`)) {
+                    removeProcs(semDados.map((i) => i.id));
+                  }
+                } }] : []),
                 { sep: true },
                 { label: "Carregar exemplos", onClick: () => seedTestData() },
                 { label: "Limpar exemplos", onClick: () => clearTestData() },
@@ -248,7 +280,7 @@ function ControleSad() {
       ) : (
         <>
           {/* Painel-resumo */}
-          <SummaryPanel summary={summary} count={items.length} />
+          <SummaryPanel summary={summary} count={base.length} />
 
           {/* Padrões pessoais — discreto */}
           <DefaultsBar defaults={defaults} onSave={saveDefaults} />
@@ -256,16 +288,29 @@ function ControleSad() {
           {/* Barra de progresso */}
           <div className="sad-progress">
             <div className="sad-progress-track">
-              <div className="sad-progress-fill" style={{ width: `${items.length ? (completos / items.length) * 100 : 0}%` }} />
+              <div className="sad-progress-fill" style={{ width: `${base.length ? (completos / base.length) * 100 : 0}%` }} />
             </div>
             <span className="sad-count">
-              <strong>{completos}/{items.length}</strong> prontos{totalPendentes > 0 && <span className="sad-pend"> · {totalPendentes} a preencher</span>}
+              <strong>{completos}/{base.length}</strong> prontos{totalPendentes > 0 && <span className="sad-pend"> · {totalPendentes} a preencher</span>}
             </span>
             <label className="sad-filter">
               <input type="checkbox" checked={onlyIncomplete} onChange={(e) => setOnlyIncomplete(e.target.checked)} />
               Só pendentes
             </label>
           </div>
+
+          {/* Aviso de processos sem dados ocultos */}
+          {semDados.length > 0 && (
+            <div className="sad-hidden-note">
+              <span>👁 {semDados.length} processo(s) só visitado(s) no SEI (sem resumo) {showHidden ? "exibido(s)" : "oculto(s)"}.</span>
+              <span className="sad-hidden-actions">
+                <button onClick={() => setShowHidden((s) => !s)}>{showHidden ? "Ocultar" : "Mostrar"}</button>
+                <button className="sad-hidden-clear" onClick={() => {
+                  if (confirm(`Remover ${semDados.length} processo(s) sem resumo da extensão?`)) removeProcs(semDados.map((i) => i.id));
+                }}>Limpar</button>
+              </span>
+            </div>
+          )}
 
           <div className="sad-list">
             {visible.map((it) => (
@@ -274,6 +319,7 @@ function ControleSad() {
                 item={it}
                 launchedAt={launched[it.id]}
                 onToggleLaunched={(v) => toggleLaunched(it.id, v)}
+                onRemove={() => { if (confirm(`Remover o processo ${it.id} da extensão?`)) removeProcs([it.id]); }}
                 onField={(k, v) => setField(it.id, k, v)}
               />
             ))}
@@ -284,7 +330,7 @@ function ControleSad() {
       {/* Seleção de quais processos revisar */}
       {picking && (
         <ReviewPicker
-          items={items}
+          items={base}
           defaultSelected={pendentes.map((i) => i.id)}
           onClose={() => setPicking(false)}
           onClear={(ids) => clearOverrides(ids)}
@@ -295,11 +341,11 @@ function ControleSad() {
       {/* Modo foco com os processos escolhidos */}
       {focusIds && (
         <FocusMode
-          items={items.filter((i) => focusIds.includes(i.id))}
+          items={base.filter((i) => focusIds.includes(i.id))}
           onField={(id, k, v) => setField(id, k, v)}
           onClear={(id) => clearOverrides([id])}
           onClose={() => setFocusIds(null)}
-          onExport={() => { copyTsv(items); setFocusIds(null); }}
+          onExport={() => { copyTsv(base); setFocusIds(null); }}
         />
       )}
     </div>
@@ -614,10 +660,11 @@ function Field({ col, val, src, attention, issue, onChange }: {
   );
 }
 
-function SadCard({ item, launchedAt, onToggleLaunched, onField }: {
+function SadCard({ item, launchedAt, onToggleLaunched, onRemove, onField }: {
   item: Item;
   launchedAt?: string;
   onToggleLaunched: (v: boolean) => void;
+  onRemove: () => void;
   onField: (key: string, value: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -686,12 +733,13 @@ function SadCard({ item, launchedAt, onToggleLaunched, onField }: {
             </div>
           )}
 
-          {/* Controle de lançamento na planilha */}
+          {/* Controle de lançamento na planilha + remover */}
           <div className="sad-launch">
             <label className="sad-launch-check">
               <input type="checkbox" checked={!!launchedAt} onChange={(e) => onToggleLaunched(e.target.checked)} />
               {launchedStr ? `Lançado na planilha em ${launchedStr}` : "Marcar como lançado na planilha"}
             </label>
+            <button className="sad-remove" onClick={onRemove} title="Remover este processo da extensão">🗑 Remover</button>
           </div>
         </div>
       )}
