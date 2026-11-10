@@ -15,6 +15,7 @@ export interface AndamentoEntry {
   date: string;
   description: string;
   unit: string;
+  user?: string; // coluna "Usuário" do histórico (quando disponível)
 }
 
 export interface ProcessDetails {

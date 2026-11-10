@@ -56,6 +56,11 @@ body {
 .sad-toast b { color: var(--pd); }
 .sad-toast-action { flex-shrink: 0; font-size: 12px; font-weight: 700; color: #fff; background: var(--ok); border: none; border-radius: 8px; padding: 7px 14px; cursor: pointer; }
 .sad-toast-action:hover { background: #15803D; }
+.sad-toast--err { color: #991B1B; background: #FEF2F2; border-color: #FCA5A5; }
+.sad-toast--err b { color: #7F1D1D; }
+.sad-toast--warn { color: #92400E; background: #FFF7E6; border-color: #F5C97B; }
+.sad-toast--warn .sad-toast-action { background: var(--warn); }
+.sad-toast--warn .sad-toast-action:hover { background: #9A3412; }
 
 /* Painel-resumo */
 .sad-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; animation: slideUp .3s ease both; }
@@ -69,6 +74,22 @@ body {
 .sad-sum-label { display: block; font-size: 11.5px; font-weight: 600; color: var(--text-soft); margin-top: 5px; }
 .sad-sum-mods { display: block; font-size: 10.5px; color: var(--muted); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 640px) { .sad-summary { grid-template-columns: repeat(2, 1fr); } }
+
+/* Busca e ordenação */
+.sad-search { display: flex; gap: 10px; margin-bottom: 12px; }
+.sad-search-input {
+  flex: 1; font-size: 12.5px; font-family: inherit; color: var(--text);
+  padding: 10px 14px; border: 1px solid var(--border-strong); border-radius: 9px;
+  background: var(--surface); outline: none;
+}
+.sad-search-input:focus { border-color: var(--p); box-shadow: 0 0 0 3px rgba(0,91,142,.12); }
+.sad-search-input::placeholder { color: var(--muted); }
+.sad-search-sort {
+  font-size: 12px; font-family: inherit; color: var(--text-soft); font-weight: 600;
+  padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 9px;
+  background: var(--surface); cursor: pointer; outline: none;
+}
+.sad-search-sort:focus { border-color: var(--p); }
 
 /* Barra de progresso + filtro */
 .sad-progress { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
@@ -237,6 +258,21 @@ body {
 .sad-badge--review { color: var(--warn); background: #FFF7ED; border: 1px solid #FED7AA; }
 .sad-badge--issue { color: #B91C1C; background: #FEF2F2; border: 1px solid #FCA5A5; }
 .sad-badge--launched { color: #0E7490; background: #ECFEFF; border: 1px solid #A5E8F0; }
+.sad-badge--changed { color: #6D28D9; background: #F5F3FF; border: 1px solid #C4B5FD; }
+
+/* Bloco "mudou desde o lançamento" */
+.sad-changes {
+  background: #F5F3FF; border: 1px solid #DDD6FE; border-left: 4px solid #8B5CF6;
+  border-radius: 10px; padding: 12px 16px; margin-bottom: 12px;
+}
+.sad-changes-title { font-size: 12.5px; font-weight: 700; color: #5B21B6; margin-bottom: 8px; }
+.sad-changes-list { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.sad-changes-list li { font-size: 12px; color: var(--text-soft); }
+.sad-changes-list b { color: var(--text); }
+.sad-changes-list s { color: var(--muted); }
+.sad-changes-to { font-weight: 700; color: #5B21B6; }
+.sad-changes .sad-toast-action { background: #7C3AED; }
+.sad-changes .sad-toast-action:hover { background: #6D28D9; }
 .sad-chevron { color: var(--muted); font-size: 11px; }
 
 .sad-card-body { padding: 14px 18px 18px; border-top: 1px solid var(--border); }

@@ -493,6 +493,66 @@ body {
   font-size: 9px; font-weight: 700; color: var(--color-accent);
   background: #E6F7FD; border-radius: var(--radius-pill); padding: 2px 7px; white-space: nowrap;
 }
+.process-moved-tag { font-size: 11px; flex-shrink: 0; }
+
+/* ── Tutorial de boas-vindas da sidebar ─────────────────────────────────────── */
+@keyframes stutFade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes stutPop { from { opacity: 0; transform: translateY(10px) scale(.97); } to { opacity: 1; transform: none; } }
+.stut-overlay {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(15, 35, 70, 0.6); backdrop-filter: blur(2px);
+  display: flex; align-items: center; justify-content: center;
+  animation: stutFade .18s ease;
+}
+.stut-card {
+  position: relative; width: 90%; max-width: 330px; background: #fff;
+  border-radius: 16px; padding: 28px 24px 20px; text-align: center;
+  box-shadow: 0 8px 32px rgba(0,0,0,.3);
+  animation: stutPop .24s cubic-bezier(.16,.84,.44,1) both;
+}
+.stut-close {
+  position: absolute; top: 10px; right: 10px; width: 26px; height: 26px;
+  background: var(--color-bg); border: none; border-radius: 7px;
+  color: var(--color-muted); font-size: 12px; cursor: pointer; line-height: 1;
+}
+.stut-close:hover { background: var(--color-border); }
+.stut-icon {
+  width: 58px; height: 58px; margin: 0 auto 12px; font-size: 28px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--color-bg); border-radius: 50%;
+}
+.stut-title { font-size: 15px; font-weight: 700; color: var(--color-primary-dark, #003D61); margin-bottom: 8px; }
+.stut-body { font-size: 12px; line-height: 1.6; color: var(--color-text); min-height: 96px; }
+.stut-dots { display: flex; justify-content: center; gap: 7px; margin: 14px 0 16px; }
+.stut-dot { width: 7px; height: 7px; border-radius: 50%; border: none; background: var(--color-border-strong, #CCD5E3); cursor: pointer; padding: 0; transition: all .2s; }
+.stut-dot--on { background: var(--color-primary); width: 18px; border-radius: 99px; }
+.stut-nav { display: flex; gap: 8px; }
+.stut-btn { flex: 1; font-size: 12px; font-weight: 600; border-radius: 8px; padding: 9px; cursor: pointer; border: none; }
+.stut-btn--ghost { background: #fff; color: var(--color-primary); border: 1px solid var(--color-border-strong, #CCD5E3); }
+.stut-btn--ghost:disabled { opacity: .4; cursor: default; }
+.stut-btn--primary { background: var(--color-primary); color: #fff; }
+.stut-btn--primary:hover { background: var(--color-primary-dark, #003D61); }
+
+/* Banner de movimentação desde a última coleta */
+.moved-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  font-size: 11.5px; line-height: 1.45; color: #92400E;
+  background: #FFF7E6; border: 1px solid #F5C97B; border-radius: 10px;
+  padding: 9px 12px; margin-bottom: 10px;
+}
+.moved-banner b { color: #7C2D12; }
+.moved-text { flex: 1; min-width: 0; }
+.moved-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.moved-btn {
+  font-size: 11px; font-weight: 700; color: #fff; background: var(--color-primary);
+  border: none; border-radius: 7px; padding: 6px 11px; cursor: pointer;
+}
+.moved-btn:hover { background: var(--color-primary-dark, #003D61); }
+.moved-dismiss {
+  font-size: 11px; color: #92400E; background: none; border: 1px solid #F5C97B;
+  border-radius: 7px; width: 24px; height: 24px; cursor: pointer; line-height: 1;
+}
+.moved-dismiss:hover { background: #FDEFD2; }
 
 .select-bar {
   display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2);

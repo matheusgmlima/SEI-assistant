@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useMemo, useState, useCallback } from "react";
+import { StrictMode, useEffect, useMemo, useState, useCallback, useRef, Component, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import type { ProcessDetails } from "@shared/index";
 import {
@@ -18,22 +18,47 @@ interface Item {
 
 const REQUIRED = new Set(SAD_REQUIRED);
 
+/** Registro proc_* legível: objeto com id string não-vazio. Qualquer outra coisa é lixo. */
+function isReadableProc(v: unknown): v is ProcessDetails {
+  return !!v && typeof v === "object" && typeof (v as ProcessDetails).id === "string" && (v as ProcessDetails).id.length > 0;
+}
+
 function useItems() {
   const [procs, setProcs] = useState<ProcessDetails[]>([]);
   const [overrides, setOverrides] = useState<Record<string, SadOverrides>>({});
+  const [corruptedKeys, setCorruptedKeys] = useState<string[]>([]); // chaves proc_* ilegíveis
   const [loaded, setLoaded] = useState(false);
   const [refreshedAt, setRefreshedAt] = useState<number>(Date.now());
+
+  // Escrita com debounce: digitar não dispara uma gravação (e releitura geral) por tecla.
+  const pendingWrites = useRef<Record<string, SadOverrides>>({});
+  const writeTimers = useRef<Record<string, number>>({});
+
+  function flushWrite(id: string) {
+    const cur = pendingWrites.current[id];
+    if (cur) { try { chrome.storage.local.set({ [`sadOverrides_${id}`]: cur }); } catch { /* contexto */ } }
+    delete pendingWrites.current[id];
+    if (writeTimers.current[id]) { clearTimeout(writeTimers.current[id]); delete writeTimers.current[id]; }
+  }
 
   const reload = useCallback(() => {
     chrome.storage.local.get(null, (all) => {
       const ps: ProcessDetails[] = [];
       const ov: Record<string, SadOverrides> = {};
+      const bad: string[] = [];
       for (const k of Object.keys(all)) {
-        if (k.startsWith("proc_")) ps.push(all[k] as ProcessDetails);
-        else if (k.startsWith("sadOverrides_")) ov[k.slice("sadOverrides_".length)] = all[k] as SadOverrides;
+        if (k.startsWith("proc_")) {
+          if (isReadableProc(all[k])) ps.push(all[k] as ProcessDetails);
+          else bad.push(k);
+        } else if (k.startsWith("sadOverrides_")) {
+          const v = all[k];
+          if (v && typeof v === "object") ov[k.slice("sadOverrides_".length)] = v as SadOverrides;
+        }
       }
+      // Edições ainda não gravadas (debounce em curso) prevalecem sobre o storage
+      for (const id of Object.keys(pendingWrites.current)) ov[id] = pendingWrites.current[id];
       ps.sort((a, b) => a.id.localeCompare(b.id));
-      setProcs(ps); setOverrides(ov); setLoaded(true); setRefreshedAt(Date.now());
+      setProcs(ps); setOverrides(ov); setCorruptedKeys(bad); setLoaded(true); setRefreshedAt(Date.now());
     });
   }, []);
 
@@ -43,13 +68,22 @@ function useItems() {
       if (Object.keys(c).some((k) => k.startsWith("proc_") || k.startsWith("sadOverrides_"))) reload();
     };
     chrome.storage.onChanged.addListener(fn);
-    return () => chrome.storage.onChanged.removeListener(fn);
+    // Garante que edição digitada nos últimos ms não se perde ao fechar a aba
+    const flushAll = () => { for (const id of Object.keys(pendingWrites.current)) flushWrite(id); };
+    window.addEventListener("beforeunload", flushAll);
+    return () => {
+      chrome.storage.onChanged.removeListener(fn);
+      window.removeEventListener("beforeunload", flushAll);
+      flushAll();
+    };
   }, [reload]);
 
   function setField(id: string, key: string, value: string) {
     setOverrides((prev) => {
       const cur = { ...(prev[id] ?? {}), [key]: value };
-      chrome.storage.local.set({ [`sadOverrides_${id}`]: cur });
+      pendingWrites.current[id] = cur;
+      if (writeTimers.current[id]) clearTimeout(writeTimers.current[id]);
+      writeTimers.current[id] = window.setTimeout(() => flushWrite(id), 400);
       return { ...prev, [id]: cur };
     });
   }
@@ -58,7 +92,12 @@ function useItems() {
   function clearOverrides(ids: string[]) {
     setOverrides((prev) => {
       const n = { ...prev };
-      for (const id of ids) { delete n[id]; chrome.storage.local.remove(`sadOverrides_${id}`); }
+      for (const id of ids) {
+        delete n[id];
+        delete pendingWrites.current[id]; // cancela gravação pendente que ressuscitaria a edição
+        if (writeTimers.current[id]) { clearTimeout(writeTimers.current[id]); delete writeTimers.current[id]; }
+        chrome.storage.local.remove(`sadOverrides_${id}`);
+      }
       return n;
     });
   }
@@ -67,21 +106,33 @@ function useItems() {
   function removeProcs(ids: string[]) {
     const keys: string[] = [];
     for (const id of ids) {
+      delete pendingWrites.current[id];
+      if (writeTimers.current[id]) { clearTimeout(writeTimers.current[id]); delete writeTimers.current[id]; }
       keys.push(`proc_${id}`, `sadOverrides_${id}`, `qa_${id}`, `docIncorporated_${id}`,
         `historicoUrl_${id}`, `procInternalId_${id}`, `sadLaunched_${id}`);
     }
     chrome.storage.local.remove(keys);
     setProcs((prev) => prev.filter((p) => !ids.includes(p.id)));
-    // limpa do mapa de "lançados" também
-    chrome.storage.local.get("sadLaunched", (r) => {
-      const map = (r.sadLaunched as Record<string, string>) ?? {};
+    // limpa dos mapas de "lançados" e snapshots também
+    chrome.storage.local.get(["sadLaunched", "sadSnapshots"], (r) => {
+      const launched = (r.sadLaunched as Record<string, string>) ?? {};
+      const snaps = (r.sadSnapshots as Record<string, unknown>) ?? {};
       let changed = false;
-      for (const id of ids) if (id in map) { delete map[id]; changed = true; }
-      if (changed) chrome.storage.local.set({ sadLaunched: map });
+      for (const id of ids) {
+        if (id in launched) { delete launched[id]; changed = true; }
+        if (id in snaps) { delete snaps[id]; changed = true; }
+      }
+      if (changed) chrome.storage.local.set({ sadLaunched: launched, sadSnapshots: snaps });
     });
   }
 
-  return { procs, overrides, loaded, setField, clearOverrides, removeProcs, reload, refreshedAt };
+  // Apaga as chaves proc_* ilegíveis detectadas no reload
+  function cleanCorrupted() {
+    if (corruptedKeys.length) chrome.storage.local.remove(corruptedKeys);
+    setCorruptedKeys([]);
+  }
+
+  return { procs, overrides, corruptedKeys, cleanCorrupted, loaded, setField, clearOverrides, removeProcs, reload, refreshedAt };
 }
 
 // Hook: padrões pessoais (auto-preenchimento dos campos manuais)
@@ -102,40 +153,105 @@ function useDefaults() {
   return { defaults, save };
 }
 
-// Hook: controle de "já lançado na planilha" (mapa id → data ISO)
+// Hook: controle de "já lançado na planilha" (id → data ISO) + snapshot dos
+// valores na hora do lançamento (para detectar o que mudou depois).
+type SnapshotMap = Record<string, Record<string, string>>;
+
 function useLaunched() {
   const [launched, setLaunched] = useState<Record<string, string>>({});
+  const [snapshots, setSnapshots] = useState<SnapshotMap>({});
   useEffect(() => {
-    chrome.storage.local.get("sadLaunched", (r) => setLaunched((r.sadLaunched as Record<string, string>) ?? {}));
+    chrome.storage.local.get(["sadLaunched", "sadSnapshots"], (r) => {
+      setLaunched((r.sadLaunched as Record<string, string>) ?? {});
+      setSnapshots((r.sadSnapshots as SnapshotMap) ?? {});
+    });
     const fn = (c: Record<string, chrome.storage.StorageChange>) => {
       if (c.sadLaunched) setLaunched((c.sadLaunched.newValue as Record<string, string>) ?? {});
+      if (c.sadSnapshots) setSnapshots((c.sadSnapshots.newValue as SnapshotMap) ?? {});
     };
     chrome.storage.onChanged.addListener(fn);
     return () => chrome.storage.onChanged.removeListener(fn);
   }, []);
-  function setMany(ids: string[], value: boolean) {
+  function setMany(ids: string[], value: boolean, snaps?: SnapshotMap) {
     setLaunched((prev) => {
       const n = { ...prev };
       for (const id of ids) { if (value) n[id] = new Date().toISOString(); else delete n[id]; }
       chrome.storage.local.set({ sadLaunched: n });
       return n;
     });
+    setSnapshots((prev) => {
+      const n = { ...prev };
+      for (const id of ids) {
+        if (value && snaps?.[id]) n[id] = snaps[id];
+        else if (!value) delete n[id];
+      }
+      chrome.storage.local.set({ sadSnapshots: n });
+      return n;
+    });
   }
-  return { launched, toggle: (id: string, v: boolean) => setMany([id], v), setMany };
+  return {
+    launched, snapshots, setMany,
+    toggle: (id: string, v: boolean, snap?: Record<string, string>) =>
+      setMany([id], v, snap ? { [id]: snap } : undefined),
+  };
 }
 
+/** Valores exportáveis atuais de um item (base do snapshot de lançamento). */
+function snapOf(row: SadRow): Record<string, string> {
+  const s: Record<string, string> = {};
+  for (const c of SAD_COLUMNS) if (!c.calc) s[c.key] = row.values[c.key] ?? "";
+  return s;
+}
+
+/** O que mudou entre o snapshot do lançamento e os valores atuais. */
+function diffSnapshot(row: SadRow, snap?: Record<string, string>): { key: string; header: string; from: string; to: string }[] {
+  if (!snap) return [];
+  const out: { key: string; header: string; from: string; to: string }[] = [];
+  for (const c of SAD_COLUMNS) {
+    if (c.calc) continue;
+    const from = (snap[c.key] ?? "").trim();
+    const to = (row.values[c.key] ?? "").trim();
+    if (from !== to) out.push({ key: c.key, header: c.header, from, to });
+  }
+  return out;
+}
+
+/** Copia texto com fallback (clipboard API pode falhar sem foco/permissão). */
+async function copyText(text: string): Promise<boolean> {
+  try { await navigator.clipboard.writeText(text); return true; } catch { /* tenta fallback */ }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  } catch { return false; }
+}
+
+// Chaves que entram no backup (e as ÚNICAS aceitas na restauração)
+const BACKUP_PREFIXES = ["proc_", "sadOverrides_", "qa_"];
+const BACKUP_KEYS = ["sadDefaults", "sadLaunched", "sadSnapshots", "seedIds"];
+const isBackupKey = (k: string) => BACKUP_KEYS.includes(k) || BACKUP_PREFIXES.some((p) => k.startsWith(p));
+
 function ControleSad() {
-  const { procs, overrides, loaded, setField, clearOverrides, removeProcs, reload, refreshedAt } = useItems();
+  const { procs, overrides, corruptedKeys, cleanCorrupted, loaded, setField, clearOverrides, removeProcs, reload, refreshedAt } = useItems();
   const { defaults, save: saveDefaults } = useDefaults();
-  const { launched, toggle: toggleLaunched, setMany: setManyLaunched } = useLaunched();
+  const { launched, snapshots, toggle: toggleLaunched, setMany: setManyLaunched } = useLaunched();
   const [onlyIncomplete, setOnlyIncomplete] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<"ok" | "fail" | null>(null);
+  const [notice, setNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const importRef = useRef<HTMLInputElement>(null);
   const [reloaded, setReloaded] = useState(false);
   const [picking, setPicking] = useState(false);        // tela de seleção de revisão
   const [focusIds, setFocusIds] = useState<string[] | null>(null); // ids no modo foco
   const [showTut, setShowTut] = useState(false);        // tutorial / como usar
   const [lastCopied, setLastCopied] = useState<string[]>([]); // ids da última cópia
   const [showHidden, setShowHidden] = useState(false);  // revelar processos sem dados
+  const [query, setQuery] = useState("");               // busca por nº/objeto/unidade
+  const [sortBy, setSortBy] = useState<"processo" | "pendentes" | "valor">("processo");
 
   // Mostra o tutorial automaticamente na primeira visita
   useEffect(() => {
@@ -152,13 +268,22 @@ function ControleSad() {
     setTimeout(() => setReloaded(false), 1800);
   }
 
-  const items: Item[] = useMemo(
-    () => procs.map((d) => {
-      const ov = overrides[d.id] ?? {};
-      return { id: d.id, details: d, overrides: ov, row: mapProcessToSad(d, ov, defaults) };
-    }),
-    [procs, overrides, defaults]
-  );
+  // Mapeia cada processo isoladamente: um registro com estrutura inesperada
+  // vira "broken" (removível) em vez de derrubar a página inteira.
+  const { items, broken } = useMemo(() => {
+    const ok: Item[] = [];
+    const bad: string[] = [];
+    for (const d of procs) {
+      try {
+        const ov = overrides[d.id] ?? {};
+        ok.push({ id: d.id, details: d, overrides: ov, row: mapProcessToSad(d, ov, defaults) });
+      } catch (e) {
+        console.warn(`[Controle SAD] Processo ${d.id} ilegível:`, e);
+        bad.push(d.id);
+      }
+    }
+    return { items: ok, broken: bad };
+  }, [procs, overrides, defaults]);
 
   // processos "sem dados" — só visitados no SEI, sem objeto/resumo (ocultos por padrão)
   const semDados = useMemo(() => items.filter((i) => !(i.row.values.objeto || "").trim()), [items]);
@@ -168,7 +293,31 @@ function ControleSad() {
     [items, showHidden]
   );
 
-  const visible = onlyIncomplete ? base.filter((i) => i.row.missingRequired.length > 0) : base;
+  // Busca textual + ordenação
+  const filtered = useMemo(() => {
+    const qn = (s: string) => s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+    const valNum = (r: SadRow) => {
+      const n = Number((r.values.valorEstimado ?? "").replace(/[^\d,.-]/g, "").replace(/\.(?=\d{3})/g, "").replace(",", "."));
+      return isFinite(n) ? n : 0;
+    };
+    let list = base;
+    const q = qn(query.trim());
+    if (q) {
+      list = list.filter((i) =>
+        qn(`${i.id} ${i.row.values.objeto ?? ""} ${i.row.values.unidadeDemandante ?? ""} ${i.row.values.contratada ?? ""}`).includes(q)
+      );
+    }
+    if (sortBy === "pendentes") {
+      list = [...list].sort((a, b) =>
+        (hasPending(b.row) ? 1 : 0) - (hasPending(a.row) ? 1 : 0) ||
+        b.row.missingRequired.length - a.row.missingRequired.length);
+    } else if (sortBy === "valor") {
+      list = [...list].sort((a, b) => valNum(b.row) - valNum(a.row));
+    }
+    return list;
+  }, [base, query, sortBy]);
+
+  const visible = onlyIncomplete ? filtered.filter((i) => i.row.missingRequired.length > 0) : filtered;
   const completos = base.filter((i) => i.row.missingRequired.length === 0).length;
   // progresso total de campos manuais ainda pendentes
   const totalPendentes = base.reduce((acc, i) => acc + i.row.missingRequired.length, 0);
@@ -191,11 +340,58 @@ function ControleSad() {
     return { total, porModalidade, comAviso, naoLancados };
   }, [base, launched]);
 
-  function copyTsv(list: Item[]) {
-    navigator.clipboard.writeText(rowsToTsv(list.map((i) => i.row))).then(() => {
-      setLastCopied(list.map((i) => i.id));
-      setCopied(true); setTimeout(() => setCopied(false), 7000);
+  async function copyTsv(list: Item[]) {
+    const ok = await copyText(rowsToTsv(list.map((i) => i.row)));
+    if (ok) setLastCopied(list.map((i) => i.id));
+    setCopied(ok ? "ok" : "fail");
+    setTimeout(() => setCopied(null), ok ? 7000 : 9000);
+  }
+
+  // ── Backup e restauração ──────────────────────────────────────────────────────
+  function exportBackup() {
+    chrome.storage.local.get(null, (all) => {
+      const data = Object.fromEntries(Object.entries(all).filter(([k]) => isBackupKey(k)));
+      const payload = { app: "sei-assistant", kind: "backup", version: 1, exportedAt: new Date().toISOString(), data };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `SEI-Assistant-backup_${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      const n = Object.keys(data).filter((k) => k.startsWith("proc_")).length;
+      setNotice({ kind: "ok", text: `Backup exportado (${n} processo(s)). Guarde o arquivo em local seguro.` });
+      setTimeout(() => setNotice(null), 6000);
     });
+  }
+
+  function importBackup(file: File) {
+    const fr = new FileReader();
+    fr.onload = () => {
+      try {
+        const obj = JSON.parse(String(fr.result));
+        if (!obj || obj.kind !== "backup" || !obj.data || typeof obj.data !== "object") {
+          throw new Error("estrutura inválida");
+        }
+        // Só restaura chaves esperadas — um JSON adulterado não sobrescreve sessão/chave de API
+        const data = Object.fromEntries(Object.entries(obj.data as Record<string, unknown>).filter(([k]) => isBackupKey(k)));
+        const n = Object.keys(data).filter((k) => k.startsWith("proc_")).length;
+        if (Object.keys(data).length === 0) throw new Error("nenhum dado reconhecido");
+        chrome.storage.local.set(data, () => {
+          reload();
+          setNotice({ kind: "ok", text: `Backup restaurado: ${n} processo(s) e configurações.` });
+          setTimeout(() => setNotice(null), 6000);
+        });
+      } catch (e) {
+        setNotice({ kind: "err", text: `Não foi possível restaurar: o arquivo não parece um backup válido do SEI Assistant.` });
+        setTimeout(() => setNotice(null), 8000);
+        console.warn("[Controle SAD] Falha ao importar backup:", e);
+      }
+    };
+    fr.onerror = () => {
+      setNotice({ kind: "err", text: "Falha ao ler o arquivo selecionado." });
+      setTimeout(() => setNotice(null), 6000);
+    };
+    fr.readAsText(file);
   }
 
   function downloadCsv(list: Item[]) {
@@ -229,12 +425,17 @@ function ControleSad() {
             </>
           )}
           <button className="sad-btn sad-btn-ghost" onClick={() => setShowTut(true)} title="Como usar esta tela">❓ Como usar</button>
-          {items.length > 0 && (
-            <KebabMenu
-              items={[
+          <KebabMenu
+            items={[
+              ...(items.length > 0 ? [
                 { label: reloaded ? "✓ Atualizado" : "Recarregar dados", onClick: doReload },
                 { label: "Baixar CSV", onClick: () => downloadCsv(visible) },
-                { sep: true },
+                { sep: true } as const,
+              ] : []),
+              { label: "Exportar backup (.json)", onClick: exportBackup },
+              { label: "Restaurar backup…", onClick: () => importRef.current?.click() },
+              ...(items.length > 0 ? [
+                { sep: true } as const,
                 { label: "Zerar todas as edições", onClick: () => {
                   if (confirm("Apagar todas as suas edições manuais? Os campos voltam ao valor sugerido pelo assistente.")) {
                     clearOverrides(base.map((i) => i.id));
@@ -245,25 +446,55 @@ function ControleSad() {
                     removeProcs(semDados.map((i) => i.id));
                   }
                 } }] : []),
-                { sep: true },
-                { label: "Carregar exemplos", onClick: () => seedTestData() },
-                { label: "Limpar exemplos", onClick: () => clearTestData() },
-              ]}
-            />
-          )}
+              ] : []),
+              { sep: true },
+              { label: "Carregar exemplos", onClick: () => seedTestData() },
+              { label: "Limpar exemplos", onClick: () => clearTestData() },
+            ]}
+          />
         </div>
       </header>
 
       {showTut && <Tutorial onClose={closeTutorial} />}
 
-      {copied && (
+      {/* input oculto para restaurar backup */}
+      <input
+        ref={importRef} type="file" accept=".json,application/json" style={{ display: "none" }}
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) importBackup(f); e.target.value = ""; }}
+      />
+
+      {copied === "ok" && (
         <div className="sad-toast">
           <span>✓ Copiado! Na planilha, clique na célula <b>A</b> da 1ª linha vazia e tecle <b>Ctrl+V</b>.</span>
           {lastCopied.length > 0 && (
-            <button className="sad-toast-action" onClick={() => { setManyLaunched(lastCopied, true); setCopied(false); }}>
+            <button className="sad-toast-action" onClick={() => {
+              const snaps: SnapshotMap = {};
+              for (const it of items) if (lastCopied.includes(it.id)) snaps[it.id] = snapOf(it.row);
+              setManyLaunched(lastCopied, true, snaps);
+              setCopied(null);
+            }}>
               Marcar {lastCopied.length} como lançado(s)
             </button>
           )}
+        </div>
+      )}
+      {copied === "fail" && (
+        <div className="sad-toast sad-toast--err">
+          ✗ Não foi possível copiar para a área de transferência. Clique na página e tente de novo — ou use <b>⋯ → Baixar CSV</b>.
+        </div>
+      )}
+      {notice && (
+        <div className={`sad-toast ${notice.kind === "err" ? "sad-toast--err" : ""}`}>{notice.text}</div>
+      )}
+
+      {/* Registros ilegíveis no armazenamento — oferecer limpeza em vez de quebrar */}
+      {(corruptedKeys.length > 0 || broken.length > 0) && (
+        <div className="sad-toast sad-toast--warn">
+          <span>⚠ {corruptedKeys.length + broken.length} registro(s) com dados corrompidos no armazenamento (não afetam os demais).</span>
+          <button
+            className="sad-toast-action"
+            onClick={() => { cleanCorrupted(); if (broken.length) removeProcs(broken); }}
+          >Limpar registros corrompidos</button>
         </div>
       )}
 
@@ -284,6 +515,23 @@ function ControleSad() {
 
           {/* Padrões pessoais — discreto */}
           <DefaultsBar defaults={defaults} onSave={saveDefaults} />
+
+          {/* Busca e ordenação */}
+          {base.length > 1 && (
+            <div className="sad-search">
+              <input
+                className="sad-search-input"
+                placeholder="🔎 Buscar por nº, objeto, unidade ou contratada…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+              <select className="sad-search-sort" value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)}>
+                <option value="processo">Ordem: nº do processo</option>
+                <option value="pendentes">Ordem: pendentes primeiro</option>
+                <option value="valor">Ordem: maior valor</option>
+              </select>
+            </div>
+          )}
 
           {/* Barra de progresso */}
           <div className="sad-progress">
@@ -313,12 +561,18 @@ function ControleSad() {
           )}
 
           <div className="sad-list">
+            {visible.length === 0 && query.trim() && (
+              <div className="sad-empty" style={{ padding: "32px 20px" }}>
+                Nenhum processo corresponde a “{query.trim()}”.
+              </div>
+            )}
             {visible.map((it) => (
               <SadCard
                 key={it.id}
                 item={it}
                 launchedAt={launched[it.id]}
-                onToggleLaunched={(v) => toggleLaunched(it.id, v)}
+                changes={launched[it.id] ? diffSnapshot(it.row, snapshots[it.id]) : []}
+                onToggleLaunched={(v) => toggleLaunched(it.id, v, v ? snapOf(it.row) : undefined)}
                 onRemove={() => { if (confirm(`Remover o processo ${it.id} da extensão?`)) removeProcs([it.id]); }}
                 onField={(k, v) => setField(it.id, k, v)}
               />
@@ -660,9 +914,10 @@ function Field({ col, val, src, attention, issue, onChange }: {
   );
 }
 
-function SadCard({ item, launchedAt, onToggleLaunched, onRemove, onField }: {
+function SadCard({ item, launchedAt, changes = [], onToggleLaunched, onRemove, onField }: {
   item: Item;
   launchedAt?: string;
+  changes?: { key: string; header: string; from: string; to: string }[];
   onToggleLaunched: (v: boolean) => void;
   onRemove: () => void;
   onField: (key: string, value: string) => void;
@@ -686,7 +941,8 @@ function SadCard({ item, launchedAt, onToggleLaunched, onRemove, onField }: {
         <span className="sad-card-id">{details.id}</span>
         <span className="sad-card-obj">{row.values.objeto || "(sem objeto)"}</span>
         <span className="sad-head-badges">
-          {launchedStr && <span className="sad-badge sad-badge--launched">✓ lançado {launchedStr}</span>}
+          {changes.length > 0 && <span className="sad-badge sad-badge--changed">🔄 {changes.length} mudou</span>}
+          {launchedStr && changes.length === 0 && <span className="sad-badge sad-badge--launched">✓ lançado {launchedStr}</span>}
           {issues.length > 0 && <span className="sad-badge sad-badge--issue">{issues.length} verificar</span>}
           {nReq > 0 && <span className="sad-badge sad-badge--req">{nReq} preencher</span>}
           {nReview > 0 && <span className="sad-badge sad-badge--review">{nReview} conferir</span>}
@@ -697,6 +953,23 @@ function SadCard({ item, launchedAt, onToggleLaunched, onRemove, onField }: {
 
       {open && (
         <div className="sad-card-body">
+          {/* Mudanças desde o lançamento na planilha */}
+          {changes.length > 0 && (
+            <div className="sad-changes">
+              <p className="sad-changes-title">🔄 Mudou desde o lançamento ({launchedStr}) — atualize a linha na planilha:</p>
+              <ul className="sad-changes-list">
+                {changes.map((c) => (
+                  <li key={c.key}>
+                    <b>{c.header}:</b> <s>{c.from || "—"}</s> → <span className="sad-changes-to">{c.to || "—"}</span>
+                  </li>
+                ))}
+              </ul>
+              <button className="sad-toast-action" onClick={() => onToggleLaunched(true)}>
+                ✓ Já atualizei a planilha
+              </button>
+            </div>
+          )}
+
           {/* Bloco de atenção — só o que importa */}
           {attentionCols.length > 0 ? (
             <div className="sad-attention">
@@ -861,6 +1134,32 @@ function FocusMode({ items, onField, onClear, onClose, onExport }: {
   );
 }
 
+// ── Rede de segurança da página: erro inesperado não vira tela branca ───────────
+class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  componentDidCatch(error: Error) { console.error("[Controle SAD] Erro de renderização:", error); }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="sad">
+        <div className="sad-empty">
+          <div className="sad-empty-icon">⚠️</div>
+          <p className="sad-empty-title">Algo deu errado ao montar a tela</p>
+          <p className="sad-empty-desc">
+            Seus dados continuam salvos. Recarregue a página — se o problema persistir,
+            use “Restaurar backup” ou limpe os registros corrompidos.
+          </p>
+          <button className="sad-btn sad-btn-primary" style={{ marginTop: 18 }} onClick={() => location.reload()}>
+            ↻ Recarregar página
+          </button>
+          <p className="sad-empty-note">{String(this.state.error)}</p>
+        </div>
+      </div>
+    );
+  }
+}
+
 createRoot(document.getElementById("root")!).render(
-  <StrictMode><ControleSad /></StrictMode>
+  <StrictMode><ErrorBoundary><ControleSad /></ErrorBoundary></StrictMode>
 );

@@ -4,6 +4,13 @@
   "version": "0.2.0",
   "description": "Sistema de apoio ao SEI para o TJPE",
 
+  "icons": {
+    "16": "dist/icons/icon16.png",
+    "32": "dist/icons/icon32.png",
+    "48": "dist/icons/icon48.png",
+    "128": "dist/icons/icon128.png"
+  },
+
   "permissions": [
     "storage",
     "sidePanel",
@@ -38,6 +45,12 @@
   },
 
   "action": {
-    "default_title": "SEI Assistant"
+    "default_title": "SEI Assistant",
+    "default_icon": {
+      "16": "dist/icons/icon16.png",
+      "32": "dist/icons/icon32.png",
+      "48": "dist/icons/icon48.png",
+      "128": "dist/icons/icon128.png"
+    }
   }
 }

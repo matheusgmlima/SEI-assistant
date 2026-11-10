@@ -186,18 +186,74 @@ function norm(s: string): string {
   return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
 }
 
-/** Casa um texto com o item mais provável de uma lista (match por inclusão). */
+/** Normaliza nome de unidade do SEI: remove sufixo de código ("-1950000000"),
+ *  acentos e pontuação. Os nomes no histórico vêm TRUNCADOS + código
+ *  (ex: "CONSULTORIA JURIDI-1200000000"). */
+function normUnit(s: string): string {
+  return s
+    .replace(/[-–]\s*\d{6,}\s*$/, "")
+    .toLowerCase()
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/** Casa um texto com o item mais provável de uma lista (inclusão + truncamento). */
 function matchList(value: string | null | undefined, list: readonly string[]): string | null {
   if (!value) return null;
-  const v = norm(value);
+  const v = normUnit(value);
+  if (!v) return null;
   // match exato
-  for (const item of list) if (norm(item) === v) return item;
+  for (const item of list) if (normUnit(item) === v) return item;
   // match por inclusão (lista contém o valor ou vice-versa)
   for (const item of list) {
-    const n = norm(item);
+    const n = normUnit(item);
     if (v.includes(n) || n.includes(v)) return item;
   }
+  // truncamento do SEI: um prefixo longo do valor aparece no item da lista
+  if (v.length >= 8) {
+    const prefix = v.slice(0, Math.min(v.length, 15));
+    for (const item of list) if (normUnit(item).includes(prefix)) return item;
+  }
   return null;
+}
+
+// ─── Unidades internas da SAD: aliases dos nomes reais do SEI ─────────────────────
+// Regexes tolerantes a TRUNCAMENTO (o SEI corta os nomes: "NUCLEO DE LICITACO-…")
+const UNIT_ALIASES: [RegExp, string][] = [
+  [/\bnlcd\b|nucleo de licitac/, "NLCD"],
+  [/\bgepro\b|gerencia de (elaboracao de )?projet/, "GEPRO"],
+  [/\bgpp\b|pesquisa de prec/, "GPP"],
+  [/\bgrrr\b/, "GRRR"],
+  [/consultoria jurid/, "Consultoria Jurídica"],
+  [/consolidac/, "Consolidação"],
+];
+
+/** Identifica se a unidade do andamento é uma unidade INTERNA da SAD. */
+function matchInternalUnit(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const v = normUnit(value);
+  if (!v) return null;
+  for (const [re, unit] of UNIT_ALIASES) if (re.test(v)) return unit;
+  for (const item of SAD_LISTS.unidadeInterna) {
+    const n = normUnit(item);
+    if (v === n || v.startsWith(n) || (v.length >= 6 && n.startsWith(v))) return item;
+  }
+  return null;
+}
+
+/** Casa o "Usuário" do histórico com a lista de servidores da SAD (por 1º nome). */
+function matchServidor(user: string | null | undefined): string {
+  if (!user) return "";
+  const u = normUnit(user).replace(/\./g, " ");
+  if (!u) return "";
+  for (const s of SAD_LISTS.servidores) {
+    const n = normUnit(s);
+    if (u === n || u.includes(n)) return s;
+    const first = n.split(" ")[0];
+    if (first.length >= 4 && (u.split(" ")[0] === first || u.startsWith(first))) return s;
+  }
+  return "";
 }
 
 function fmtDate(d: Date | null): string {
@@ -291,7 +347,7 @@ export function mapProcessToSad(details: ProcessDetails, overrides: SadOverrides
   set("evento", inferEvento(details, summary), "inferido");
 
   // M · Data Recebimento SAD (INFERIDO: 1ª entrada em unidade SAD/interna)
-  const recebSad = chrono.find((a) => /\bSAD\b|secretaria de administra/i.test(a.unit) || matchList(a.unit, SAD_LISTS.unidadeInterna));
+  const recebSad = chrono.find((a) => /\bSAD\b|secretaria de administra/i.test(a.unit) || matchInternalUnit(a.unit));
   set("dataRecebSad", fmtDate(parseAuditDate(recebSad?.date)), "inferido");
 
   // N · Status Atual (INFERIDO do andamento)
@@ -300,14 +356,15 @@ export function mapProcessToSad(details: ProcessDetails, overrides: SadOverrides
   // R · Fase Atual (INFERIDO)
   set("faseAtual", inferFase(details), "inferido");
 
-  // Tramitação interna (S/W/AA…) — só unidades internas da SAD, em ordem
-  const fasesInternas = buildInternalPhases(chrono);
+  // Tramitação interna (S/W/AA…) — só unidades internas da SAD, em ordem.
+  // Planilha tem 3 blocos; se houver mais passagens, mantém as 3 ÚLTIMAS (mais recentes).
+  const fasesInternas = buildInternalPhases(chrono).slice(-3);
   for (let i = 0; i < 3; i++) {
     const p = fasesInternas[i];
-    set(`unidade${i + 1}`, p?.unit ?? "", "auto");
-    set(`entrada${i + 1}`, fmtDate(p?.entrada ?? null), "auto");
-    set(`saida${i + 1}`, fmtDate(p?.saida ?? null), "auto");
-    set(`servidor${i + 1}`, "", "vazio"); // servidor não vem do andamento atual
+    set(`unidade${i + 1}`, p?.unit ?? "", "inferido");
+    set(`entrada${i + 1}`, fmtDate(p?.entrada ?? null), "inferido");
+    set(`saida${i + 1}`, fmtDate(p?.saida ?? null), "inferido");
+    set(`servidor${i + 1}`, p?.servidor ?? "", "inferido");
   }
 
   // Formalização / Resultado / Instrumento (INFERIDO dos documentos)
@@ -410,21 +467,24 @@ function inferNlcd(docsText: string): string {
   return m ? (m[1] || m[2] || "") : "";
 }
 
-interface InternalPhase { unit: string; entrada: Date | null; saida: Date | null; }
+interface InternalPhase { unit: string; entrada: Date | null; saida: Date | null; servidor: string; }
 
 /** Reconstrói as passagens por unidades INTERNAS da SAD (NLCD, GEPRO…) em ordem. */
-function buildInternalPhases(chrono: { date: string; unit: string }[]): InternalPhase[] {
+function buildInternalPhases(chrono: { date: string; unit: string; user?: string }[]): InternalPhase[] {
   const phases: InternalPhase[] = [];
   let current: InternalPhase | null = null;
 
   for (const e of chrono) {
-    const matched = matchList(e.unit, SAD_LISTS.unidadeInterna);
+    const matched = matchInternalUnit(e.unit);
     const d = parseAuditDate(e.date);
     if (matched) {
       if (!current || current.unit !== matched) {
         if (current) current.saida = d;
-        current = { unit: matched, entrada: d, saida: null };
+        current = { unit: matched, entrada: d, saida: null, servidor: matchServidor(e.user) };
         phases.push(current);
+      } else if (!current.servidor) {
+        // dentro da mesma unidade, captura o servidor da movimentação seguinte
+        current.servidor = matchServidor(e.user);
       }
     } else if (current) {
       // saiu de uma unidade interna
@@ -439,8 +499,10 @@ function buildInternalPhases(chrono: { date: string; unit: string }[]): Internal
 
 /** Gera linhas TSV (sem cabeçalho) prontas para colar a partir da coluna A. */
 export function rowsToTsv(rows: SadRow[]): string {
+  // Célula NUNCA pode conter tab/quebra de linha — quebraria o alinhamento ao colar.
+  const cell = (v: unknown) => String(v ?? "").replace(/\t/g, " ").replace(/\r?\n|\r/g, " ").trim();
   return rows
-    .map((r) => SAD_COLUMNS.map((c) => (r.values[c.key] ?? "").replace(/\t/g, " ").replace(/\n/g, " ")).join("\t"))
+    .map((r) => SAD_COLUMNS.map((c) => cell(r.values[c.key])).join("\t"))
     .join("\n");
 }
 

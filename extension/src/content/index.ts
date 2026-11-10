@@ -397,11 +397,13 @@ function extractAndamento(): AndamentoEntry[] {
 
   const dateIdx = headers.findIndex((h) => h.includes("data"));
   const unitIdx = headers.findIndex((h) => h.includes("unidade") || h.includes("setor"));
+  const userIdx = headers.findIndex((h) => h.includes("usu"));
   const descIdx = headers.findIndex((h) => h.includes("descri") || h.includes("movimento") || h.includes("ocorrência"));
 
   // Fallback: formato TJPE padrão — 0=Data/Hora, 1=Unidade, 2=Usuário, 3=Descrição
   const di = dateIdx >= 0 ? dateIdx : 0;
   const ui = unitIdx >= 0 ? unitIdx : 1;
+  const si = userIdx >= 0 ? userIdx : (headers.length >= 4 ? 2 : -1);
   const xi = descIdx >= 0 ? descIdx : (headers.length >= 4 ? 3 : 1);
 
   // Pula primeira linha (sempre é cabeçalho, independente de th ou td)
@@ -413,8 +415,9 @@ function extractAndamento(): AndamentoEntry[] {
     if (cells.length < 2) continue;
     const date        = cells[di]?.textContent?.replace(/\s+/g, " ").trim() ?? "";
     const unit        = cells[ui]?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+    const user        = si >= 0 ? (cells[si]?.textContent?.replace(/\s+/g, " ").trim() ?? "") : "";
     const description = cells[xi]?.textContent?.replace(/\s+/g, " ").trim() ?? "";
-    if (date || description) result.push({ date, unit, description });
+    if (date || description) result.push({ date, unit, description, ...(user ? { user } : {}) });
   }
 
   console.log(`[SEI Assistant] Andamento extraído: ${result.length} registros`);
@@ -743,6 +746,19 @@ function doExtractAndSave(id: string) {
     const internalId = new URL(window.location.href).searchParams.get("id_procedimento");
     if (internalId) {
       safeStorageSet({ [`procInternalId_${id}`]: internalId });
+    }
+
+    // ── Alerta de movimentação ─────────────────────────────────────────────────────
+    // Processo já coletado (tinha resumo) ganhou andamento novo ou documentos novos
+    // → sinaliza para a sidebar/portfólio avisar que os dados estão desatualizados.
+    const novasMovs = finalAndamento.length - (existing.andamento?.length ?? 0);
+    const novidades = Math.max(novasMovs, 0) + addedCount;
+    if (existing.summary && novidades > 0) {
+      storageGet(`moved_${id}`).then((mr) => {
+        const prev = (mr[`moved_${id}`] as { count?: number } | undefined)?.count ?? 0;
+        safeStorageSet({ [`moved_${id}`]: { count: prev + novidades, at: Date.now() } });
+        console.log(`[SEI Assistant] 🔔 Processo ${id}: ${prev + novidades} novidade(s) desde a última coleta`);
+      });
     }
 
     safeStorageSet({ [storageKey]: updated });
@@ -1280,6 +1296,7 @@ async function runFullCollection(processId: string) {
     // ── Passo 4: Gerar resumo com IA ──────────────────────────────────────────
     if (!isContextValid()) return;
     setCollectionProgress(processId, "Gerando resumo com IA…", 4, TOTAL);
+    safeStorageRemove(`moved_${processId}`); // recoletado → alerta de movimentação resolvido
     safeSendMessage({ type: "COLLECTION_DONE", payload: { processId } });
 
     // Se faz parte de uma fila em lote, avança para o próximo processo

@@ -1222,6 +1222,43 @@ function renderSummary(text: string) {
 }
 
 // ── Tela: Detalhe do processo ───────────────────────────────────────────────────
+// Hook: alerta de movimentação (flag moved_${id} gravada pelo content script
+// quando um processo já coletado ganha andamento/documentos novos)
+function useMoved(processId: string) {
+  const [moved, setMoved] = useState<{ count: number; at: number } | null>(null);
+  useEffect(() => {
+    const key = `moved_${processId}`;
+    chrome.storage.local.get(key, (r) => setMoved((r[key] as { count: number; at: number }) ?? null));
+    const fn = (c: Record<string, chrome.storage.StorageChange>) => {
+      if (c[key]) setMoved((c[key].newValue as { count: number; at: number }) ?? null);
+    };
+    chrome.storage.onChanged.addListener(fn);
+    return () => chrome.storage.onChanged.removeListener(fn);
+  }, [processId]);
+  function dismiss() {
+    chrome.storage.local.remove(`moved_${processId}`);
+    setMoved(null);
+  }
+  return { moved, dismiss };
+}
+
+// Hook: conjunto de processos com movimentação pendente (para o portfólio)
+function useMovedIds(): Set<string> {
+  const [ids, setIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    const load = () => chrome.storage.local.get(null, (all) => {
+      setIds(new Set(Object.keys(all).filter((k) => k.startsWith("moved_")).map((k) => k.slice("moved_".length))));
+    });
+    load();
+    const fn = (c: Record<string, chrome.storage.StorageChange>) => {
+      if (Object.keys(c).some((k) => k.startsWith("moved_"))) load();
+    };
+    chrome.storage.onChanged.addListener(fn);
+    return () => chrome.storage.onChanged.removeListener(fn);
+  }, []);
+  return ids;
+}
+
 function ProcessDetailScreen({
   processId,
   onBack,
@@ -1231,6 +1268,7 @@ function ProcessDetailScreen({
   onBack: () => void;
   onSettings: () => void;
 }) {
+  const { moved, dismiss: dismissMoved } = useMoved(processId);
   const { details, summarizing, summaryError, generateSummary } = useProcessDetails(processId);
   const { progress: collectProgress, startCollection, stopCollection, reset: resetCollection } = useCollectionProgress(processId);
   const { audit, auditing, error: auditError, runAudit } = useAudit(processId, details);
@@ -1340,6 +1378,19 @@ function ProcessDetailScreen({
       {details && (
         <div className="detail-body">
           {timeAgo && <p className="processes-meta">Dados coletados {timeAgo}</p>}
+
+          {/* Alerta de movimentação desde a última coleta */}
+          {moved && (
+            <div className="moved-banner">
+              <span className="moved-text">
+                🔔 <b>{moved.count} novidade{moved.count > 1 ? "s" : ""}</b> neste processo desde a última coleta — o resumo pode estar desatualizado.
+              </span>
+              <span className="moved-actions">
+                <button className="moved-btn" onClick={startCollection}>↺ Recoletar</button>
+                <button className="moved-dismiss" onClick={dismissMoved} title="Dispensar aviso">✕</button>
+              </span>
+            </div>
+          )}
 
           {/* Coleta guiada */}
           <CollectionProgressBar
@@ -1575,6 +1626,7 @@ function ProcessListScreen({
 }) {
   const { items, collectedAt, loading, notOnPage, collect } = usePortfolio();
   const { queue, start: startQueue, stop: stopQueue, dismiss: dismissQueue } = useQueue();
+  const movedIds = useMovedIds();
   const [sortKey, setSortKey] = useState<SortKey>("risco");
   const [query, setQuery] = useState("");
   const [riskFilter, setRiskFilter] = useState<RiskFilter>(null);
@@ -1777,6 +1829,7 @@ function ProcessListScreen({
                 selecting={selecting}
                 selected={selected.has(p.id)}
                 isQueueCurrent={queue?.current === p.id}
+                hasMoved={movedIds.has(p.id)}
                 onClick={() => (selecting ? toggleSel(p.id) : onSelect(p.id))}
               />
             ))}
@@ -1838,12 +1891,13 @@ function StatChip({ label, count, cls, active, onClick }: {
   );
 }
 
-function PortfolioCard({ item, onClick, selecting = false, selected = false, isQueueCurrent = false }: {
+function PortfolioCard({ item, onClick, selecting = false, selected = false, isQueueCurrent = false, hasMoved = false }: {
   item: PortfolioItem;
   onClick: () => void;
   selecting?: boolean;
   selected?: boolean;
   isQueueCurrent?: boolean;
+  hasMoved?: boolean;
 }) {
   const bucket = riskBucket(item);
   const riskCls = bucket === "nao" ? "risk--nao"
@@ -1866,6 +1920,7 @@ function PortfolioCard({ item, onClick, selecting = false, selected = false, isQ
           </span>
         )}
         <span className="process-id">{item.id}</span>
+        {hasMoved && <span className="process-moved-tag" title="Movimentou desde a última coleta">🔔</span>}
         {isQueueCurrent && <span className="process-queue-tag">⏳ coletando</span>}
         <span className={`process-risk-badge ${riskCls}`}>
           {item.audit ? `${riskLabel} · ${item.audit.score}` : riskLabel}
@@ -1899,6 +1954,16 @@ function PortfolioCard({ item, onClick, selecting = false, selected = false, isQ
 function ActiveScreen({ session }: { session: SessionInfo }) {
   const [view, setView] = useState<View>("main");
   const [selectedProcess, setSelectedProcess] = useState<string | null>(null);
+  const [showTut, setShowTut] = useState(false);
+
+  // Tutorial automático na primeira abertura
+  useEffect(() => {
+    chrome.storage.local.get("sidebarTutorialSeen", (r) => { if (!r.sidebarTutorialSeen) setShowTut(true); });
+  }, []);
+  function closeTut() {
+    setShowTut(false);
+    chrome.storage.local.set({ sidebarTutorialSeen: true });
+  }
 
   if (view === "settings") return <SettingsScreen onBack={() => setView("main")} />;
 
@@ -1933,8 +1998,11 @@ function ActiveScreen({ session }: { session: SessionInfo }) {
           <p className="sidebar-title">SEI Assistant</p>
           <p className="sidebar-subtitle">TJPE</p>
         </div>
+        <button className="btn-gear" onClick={() => setShowTut(true)} title="Como usar o SEI Assistant">❓</button>
         <button className="btn-gear" onClick={() => setView("settings")} title="Configurações IA">⚙</button>
       </header>
+
+      {showTut && <SidebarTutorial onClose={closeTut} />}
 
       <div className="status-badge">
         <span className="status-dot"/>
@@ -1960,6 +2028,80 @@ function ActiveScreen({ session }: { session: SessionInfo }) {
           Abrir dashboard →
         </button>
       </footer>
+    </div>
+  );
+}
+
+// ── Tutorial de boas-vindas da sidebar ───────────────────────────────────────────
+const SIDEBAR_TUT_STEPS = [
+  {
+    icon: "👋",
+    title: "Bem-vindo ao SEI Assistant",
+    body: "Ele lê os processos do SEI por você: resume com IA, audita a conformidade documental e preenche a planilha de Controle SAD. Vamos ver o fluxo em 1 minuto.",
+  },
+  {
+    icon: "⚡",
+    title: "1. Colete os dados",
+    body: "Abra um processo no SEI e clique em “Coletar dados do processo”. A extensão expande a árvore, lê os despachos e o andamento sozinha. Em “Meus processos” (☑) dá para coletar vários em lote.",
+  },
+  {
+    icon: "🤖",
+    title: "2. Resumo e auditoria",
+    body: "Depois da coleta, as abas mostram o Resumo da IA (objeto, valor, vigência…), a Tramitação e a Auditoria — uma nota de conformidade que considera a fase atual do processo.",
+  },
+  {
+    icon: "💬",
+    title: "3. Pergunte ao processo",
+    body: "Na aba “Perguntar”, faça perguntas em linguagem natural (“qual o valor estimado?”, “onde está parado?”) e a IA responde com base nos documentos coletados.",
+  },
+  {
+    icon: "🔔",
+    title: "4. Fique de olho",
+    body: "Se um processo já coletado movimentar no SEI, aparece um alerta 🔔 avisando que o resumo pode estar desatualizado — um clique em “Recoletar” resolve.",
+  },
+  {
+    icon: "📊",
+    title: "5. Exporte para a planilha",
+    body: "Em “Controle SAD”, os processos coletados viram linhas prontas da planilha — revise os campos pendentes e copie com um clique. Lá tem um tutorial próprio. Para os recursos de IA, configure a chave em ⚙.",
+  },
+];
+
+function SidebarTutorial({ onClose }: { onClose: () => void }) {
+  const [step, setStep] = useState(0);
+  const last = step >= SIDEBAR_TUT_STEPS.length - 1;
+  const s = SIDEBAR_TUT_STEPS[step];
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowRight" && !last) setStep((x) => x + 1);
+      else if (e.key === "ArrowLeft" && step > 0) setStep((x) => x - 1);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [step, last, onClose]);
+
+  return (
+    <div className="stut-overlay">
+      <div className="stut-card">
+        <button className="stut-close" onClick={onClose} title="Fechar (Esc)">✕</button>
+        <div className="stut-icon">{s.icon}</div>
+        <p className="stut-title">{s.title}</p>
+        <p className="stut-body">{s.body}</p>
+        <div className="stut-dots">
+          {SIDEBAR_TUT_STEPS.map((_, i) => (
+            <button key={i} className={`stut-dot ${i === step ? "stut-dot--on" : ""}`} onClick={() => setStep(i)} aria-label={`Passo ${i + 1}`} />
+          ))}
+        </div>
+        <div className="stut-nav">
+          <button className="stut-btn stut-btn--ghost" onClick={() => setStep((x) => x - 1)} disabled={step === 0}>← Voltar</button>
+          {last ? (
+            <button className="stut-btn stut-btn--primary" onClick={onClose}>Começar ✓</button>
+          ) : (
+            <button className="stut-btn stut-btn--primary" onClick={() => setStep((x) => x + 1)}>Próximo →</button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
