@@ -16,7 +16,6 @@ export default defineConfig({
         sidebar: resolve(__dirname, "sidebar.html"),
         report: resolve(__dirname, "report.html"),
         dashboard: resolve(__dirname, "dashboard.html"),
-        sad: resolve(__dirname, "sad.html"),
       },
       output: {
         entryFileNames: "[name]/index.js",

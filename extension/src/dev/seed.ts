@@ -2,7 +2,7 @@
  * extension/src/dev/seed.ts
  *
  * Dados de TESTE: processos fictícios realistas para validar o fluxo completo
- * (Portfólio, Dashboard, Auditoria, Controle SAD) sem depender de coletar
+ * (Portfólio, Dashboard, Auditoria) sem depender de coletar
  * processos reais do SEI. Marcados em `seedIds` para limpeza posterior.
  */
 
@@ -225,7 +225,7 @@ export async function clearTestData(): Promise<void> {
   const r = await getKey("seedIds");
   const ids = (r.seedIds as string[]) ?? [];
   const keys: string[] = ["seedIds"];
-  for (const id of ids) keys.push(`proc_${id}`, `sadOverrides_${id}`, `qa_${id}`, `collecting_${id}`);
+  for (const id of ids) keys.push(`proc_${id}`, `qa_${id}`, `collecting_${id}`);
   await chrome.storage.local.remove(keys);
 }
 

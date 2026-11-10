@@ -2019,7 +2019,6 @@ function ActiveScreen({ session }: { session: SessionInfo }) {
       <nav className="actions">
         <p className="actions-label">Ações rápidas</p>
         <ActionItem icon="📋" title="Meus processos" desc="Listar e resumir processos" onClick={() => setView("processes")}/>
-        <ActionItem icon="📊" title="Controle SAD" desc="Exportar processos para a planilha" onClick={() => chrome.tabs.create({ url: chrome.runtime.getURL("dist/sad.html") })}/>
         <ActionItem icon="📈" title="Painel da unidade" desc="Métricas e gargalos" onClick={() => chrome.runtime.sendMessage({ type: "OPEN_DASHBOARD" })}/>
       </nav>
 
@@ -2037,7 +2036,7 @@ const SIDEBAR_TUT_STEPS = [
   {
     icon: "👋",
     title: "Bem-vindo ao SEI Assistant",
-    body: "Ele lê os processos do SEI por você: resume com IA, audita a conformidade documental e preenche a planilha de Controle SAD. Vamos ver o fluxo em 1 minuto.",
+    body: "Ele lê os processos do SEI por você: resume com IA e audita a conformidade documental. Vamos ver o fluxo em 1 minuto.",
   },
   {
     icon: "⚡",
@@ -2057,12 +2056,7 @@ const SIDEBAR_TUT_STEPS = [
   {
     icon: "🔔",
     title: "4. Fique de olho",
-    body: "Se um processo já coletado movimentar no SEI, aparece um alerta 🔔 avisando que o resumo pode estar desatualizado — um clique em “Recoletar” resolve.",
-  },
-  {
-    icon: "📊",
-    title: "5. Exporte para a planilha",
-    body: "Em “Controle SAD”, os processos coletados viram linhas prontas da planilha — revise os campos pendentes e copie com um clique. Lá tem um tutorial próprio. Para os recursos de IA, configure a chave em ⚙.",
+    body: "Se um processo já coletado movimentar no SEI, aparece um alerta 🔔 avisando que o resumo pode estar desatualizado — um clique em “Recoletar” resolve. Para os recursos de IA, configure a chave em ⚙.",
   },
 ];
 
