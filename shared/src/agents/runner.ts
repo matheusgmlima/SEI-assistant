@@ -135,6 +135,46 @@ export function limparSaida(bruto: string, nome: string): { texto: string; viola
 
 export async function rodarAgente(id: AgenteId, docs: Documento[], cfg: LlmConfig, prompts: Prompts): Promise<ResultadoAgente> {
   const agente = AGENTES.find((a) => a.id === id)!;
+  // Agente de 1 documento recebe UM por chamada: com vários juntos (DFD+minuta+TR) o
+  // modelo se dilui — no TR real o revisor achou 2 problemas sozinho e 0 com os 3 juntos.
+  if (!agente.multiDoc && docs.length > 1) {
+    const partes = await Promise.allSettled(docs.map((d) => rodarUmaVez(agente, [d], cfg, prompts)));
+    return juntarResultados(agente, docs, partes);
+  }
+  return rodarUmaVez(agente, docs, cfg, prompts);
+}
+
+const BLOCO = /^(?=\s*\d+\.\s*\[(?:ALTA|M[ÉE]DIA|BAIXA)\])/im;
+function juntarResultados(agente: Agente, docs: Documento[], partes: PromiseSettledResult<ResultadoAgente>[]): ResultadoAgente {
+  const ok = partes.flatMap((p, i) => p.status === "fulfilled" ? [{ doc: docs[i], r: p.value }] : []);
+  const falhas = partes.flatMap((p, i) => p.status === "rejected" ? [`${docs[i].nome}: ${(p.reason as Error)?.message ?? p.reason}`] : []);
+  if (!ok.length) throw new Error(falhas.join(" · "));
+  const blocos: string[] = [];
+  const conferidos: string[] = [];
+  for (const { doc, r } of ok) {
+    const corpo = r.texto.replace(/^\s*Conferido sem problema:[\s\S]*$/im, "");
+    for (const b of corpo.split(BLOCO).filter((x) => /^\s*\d+\.\s*\[/.test(x))) {
+      // "onde" sem o nome do documento ("Documento inteiro", "Item 9.2") ganha o nome dele
+      blocos.push(b.trim().replace(/^(\s*)\d+\.(\s*\[[^\]]+\]\s*)(.*)$/m, (_, a, c, onde) =>
+        `${a}${blocos.length + 1}.${c}${onde.toLowerCase().includes(doc.nome.split(/\s+/)[0].toLowerCase()) ? onde : `${doc.nome} — ${onde}`}`));
+    }
+    const c = r.texto.match(/^\s*Conferido sem problema:\s*(.*)$/im)?.[1].trim();
+    if (c) conferidos.push(`${doc.nome}: ${c}`);
+  }
+  const texto = [`${agente.nome} — ${docs.length} documentos`,
+    blocos.length ? `${blocos.length} ponto(s) para corrigir em ${ok.length} documento(s).` : `Nenhum problema nos ${ok.length} documento(s).`,
+    "", ...blocos.flatMap((b) => [b, ""]), `Conferido sem problema: ${conferidos.join(" | ")}`].join("\n");
+  const rs = ok.map((o) => o.r);
+  return {
+    agente: agente.id, nome: agente.nome, texto, ms: Math.max(...rs.map((r) => r.ms)),
+    tokens: { entrada: rs.reduce((a, r) => a + r.tokens.entrada, 0), saida: rs.reduce((a, r) => a + r.tokens.saida, 0) },
+    chamadasFerramenta: rs.flatMap((r) => r.chamadasFerramenta), verificacao: verificarTrechos(texto, docs),
+    violacoes: rs.flatMap((r) => r.violacoes), ...(falhas.length ? { erro: `falhou em: ${falhas.join(" · ")}` } : {}),
+  };
+}
+
+async function rodarUmaVez(agente: Agente, docs: Documento[], cfg: LlmConfig, prompts: Prompts): Promise<ResultadoAgente> {
+  const id = agente.id;
   const messages: Msg[] = montarMensagens(agente, prompts, docs);
   const tools = toolDefs(agente.fnTools);
   const t0 = Date.now();
@@ -197,4 +237,4 @@ export function verificarTrechos(saida: string, docs: Documento[]): VerificacaoT
   }
   return { total, verificados: total - naoEncontrados.length, naoEncontrados };
 }
-export const __test = { guardaArgumento };
+export const __test = { guardaArgumento, juntarResultados, AGENTES };

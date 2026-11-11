@@ -44,3 +44,20 @@ const prop = extrairProposta("DIAGNÓSTICO:\n- padrão A\nMUDANÇAS:\n- regra B\
 assert.equal(prop.prompt, "Nome do agente: X\nnovo");
 assert.equal(prop.diagnostico, "- padrão A");
 console.log("controlador-check OK");
+
+// Agente de 1 documento rodado por documento: blocos renumerados e "onde" com o nome do doc
+{
+  const { juntarResultados, AGENTES } = (await import("../src/agents/runner.ts")).__test;
+  const { parseSaida } = await import("../src/agents/saida.ts");
+  const r = (texto) => ({ status: "fulfilled", value: { texto, ms: 1, tokens: { entrada: 1, saida: 1 }, chamadasFerramenta: [], violacoes: [] } });
+  const docs = [{ nome: "Termo de Referência", texto: "os impossibilite" }, { nome: "Minuta Contratual", texto: "fiscalisação" }];
+  const j = juntarResultados(AGENTES[0], docs, [
+    r('X — TR\n1 ponto.\n\n1. [MÉDIA] Item 9.2\nProblema: Concordância.\nTrecho: "os impossibilite"\nCorreção: o(a).\n\nConferido sem problema: grafia'),
+    r('X — Minuta\n1 ponto.\n\n1. [BAIXA] Minuta Contratual, Cláusula 7.1\nProblema: Grafia.\nTrecho: "fiscalisação"\nCorreção: fiscalização.\n\nConferido sem problema: pontuação'),
+  ]);
+  const s = parseSaida(j.texto);
+  const ok = s.problemas.length === 2 && s.problemas[1].n === 2 && s.problemas[0].onde === "Termo de Referência — Item 9.2"
+    && s.problemas[1].onde === "Minuta Contratual, Cláusula 7.1" && j.verificacao.naoEncontrados.length === 0 && !j.erro;
+  console.log(ok ? "juntar-check OK" : "juntar-check FALHOU\n" + j.texto);
+  if (!ok) process.exitCode = 1;
+}
