@@ -1,0 +1,593 @@
+import re
+
+class Tools:
+    def __init__(self):
+        pass
+
+    def extrair_mencoes_numericas_temporais(self, texto: str) -> dict:
+        """
+        Extrai todas as menções a valores monetários, prazos (dias/meses/anos),
+        percentuais, datas e quantitativos com extenso entre parênteses, cada uma
+        com o trecho onde aparece. Use SEMPRE antes de comparar se o mesmo fato é
+        descrito com valores diferentes em partes distintas do documento.
+        """
+        texto = texto or ""
+
+        def trecho(inicio, fim, janela=70):
+            s = " ".join(texto[max(0, inicio - janela):fim + janela].split())
+            return s[:160]
+
+        def classificar(cauda: str) -> str:
+            cauda_l = cauda.lower()
+            if re.match(r"\s*(dias?|meses|mes|m[eê]s|anos?)\b", cauda_l):
+                return "prazo"
+            if re.match(r"\s*%", cauda_l) or cauda_l[:12].strip().startswith("por cento"):
+                return "percentual"
+            return "quantitativo"
+
+        vistos = set()
+        mencoes = []
+
+        for m in re.finditer(r"R\$\s*[\d\.]+,\d{2}", texto):
+            valor = m.group(0)
+            chave = ("valor", valor, m.start())
+            if chave in vistos:
+                continue
+            vistos.add(chave)
+            mencoes.append({"tipo": "valor", "valor": valor, "trecho": trecho(m.start(), m.end())})
+
+        for m in re.finditer(r"\b\d{1,3}(?:,\d+)?\s*%", texto):
+            valor = m.group(0)
+            chave = ("percentual", valor, m.start())
+            if chave in vistos:
+                continue
+            vistos.add(chave)
+            mencoes.append({"tipo": "percentual", "valor": valor, "trecho": trecho(m.start(), m.end())})
+
+        for m in re.finditer(
+            r"\b\d{1,2}\s+de\s+(?:janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|"
+            r"agosto|setembro|outubro|novembro|dezembro)\s+de\s+\d{4}\b",
+            texto, re.IGNORECASE,
+        ):
+            valor = m.group(0)
+            chave = ("data", valor.lower(), m.start())
+            if chave in vistos:
+                continue
+            vistos.add(chave)
+            mencoes.append({"tipo": "data", "valor": valor, "trecho": trecho(m.start(), m.end())})
+
+        for m in re.finditer(r"\b\d{2}/\d{2}/\d{4}\b", texto):
+            valor = m.group(0)
+            chave = ("data", valor, m.start())
+            if chave in vistos:
+                continue
+            vistos.add(chave)
+            mencoes.append({"tipo": "data", "valor": valor, "trecho": trecho(m.start(), m.end())})
+
+        # Número com extenso entre parênteses — convenção redacional para dados
+        # críticos: "420 (quatrocentos e vinte)", "60 (sessenta) dias corridos".
+        # Exclui casas decimais (",00"), CEP/telefone ("-700") e referências de
+        # cláusula ("18.1.3") checando o caractere anterior ao número, e exige
+        # que o conteúdo entre parênteses seja mesmo um número por extenso.
+        padrao_extenso = r"(?<!,)(?<!-)(?<!\.)(?<!\d)(\d{1,3}(?:\.\d{3})*)\s*\(([^)]{2,60})\)"
+        for m in re.finditer(padrao_extenso, texto):
+            numero = m.group(1)
+            extenso = m.group(2).strip()
+            if not re.fullmatch(r"[a-zà-ú]+(?:[\s,]+(?:e\s+)?[a-zà-ú]+)*", extenso):
+                continue
+            if any(c.isupper() for c in extenso) or any(c.isdigit() for c in extenso):
+                continue
+            cauda = texto[m.end():m.end() + 20]
+            tipo = classificar(cauda)
+            valor = f"{numero} ({extenso})"
+            chave = (tipo, valor, m.start())
+            if chave in vistos:
+                continue
+            vistos.add(chave)
+            mencoes.append({"tipo": tipo, "valor": valor, "trecho": trecho(m.start(), m.end())})
+
+        return {"mencoes": mencoes}
+
+
+
+import re
+
+class Tools:
+    def __init__(self):
+        pass
+
+    def extrair_dados_institucionais(self, texto: str) -> dict:
+        """
+        Extrai do documento todos os identificadores institucionais — CNPJ (com
+        validação de dígito verificador), CEP, telefone, número de processo SEI
+        e e-mail — com o trecho onde cada um aparece. Use SEMPRE antes de
+        afirmar que um dado está ausente, errado ou divergente.
+        """
+        texto = texto or ""
+
+        def dv_cnpj_ok(valor: str) -> bool:
+            n = re.sub(r"\D", "", valor)
+            if len(n) != 14 or n == n[0] * 14:
+                return False
+            for tam in (12, 13):
+                pesos = (list(range(tam - 7, 1, -1)) + list(range(9, 1, -1)))[:tam]
+                soma = sum(int(n[i]) * pesos[i] for i in range(tam))
+                digito = 0 if soma % 11 < 2 else 11 - soma % 11
+                if int(n[tam]) != digito:
+                    return False
+            return True
+
+        def achar(padrao, filtro=None):
+            vistos, saida = set(), []
+            for m in re.finditer(padrao, texto):
+                valor = m.group(0).strip()
+                if filtro and not filtro(valor):
+                    continue
+                if valor in vistos:
+                    continue
+                vistos.add(valor)
+                trecho = " ".join(texto[max(0, m.start() - 70):m.end() + 40].split())
+                saida.append({"valor": valor, "trecho": trecho[:120]})
+            return saida
+
+        return {
+            "cnpj": achar(r"\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}", dv_cnpj_ok),
+            "cnpj_invalidos": achar(r"\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}", lambda v: not dv_cnpj_ok(v)),
+            "cep": achar(r"\b\d{5}-\d{3}\b"),
+            "telefone": achar(r"\(?\d{2}\)?\s?\d{4,5}-\d{4}"),
+            "processo_sei": achar(r"\b\d{8}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b"),
+            "email": achar(r"[\w\.-]+@[\w\.-]+\.\w{2,}"),
+        }
+
+
+
+
+import re
+
+class Tools:
+    def __init__(self):
+        pass
+
+    def listar_secoes_do_documento(self, texto: str) -> dict:
+        """
+        Extrai o mapa estrutural do documento: seções numeradas de primeiro e
+        segundo nível (ex: "1. DO OBJETO", "1.9. QUANTITATIVO"), em ordem, e
+        aponta números repetidos. Use SEMPRE antes de afirmar que uma seção
+        está ausente ou que a numeração está correta.
+        """
+        texto = texto or ""
+        brutos = []
+        padrao = r"(?m)^\s*(\d{1,2}(?:\.\d{1,2})?)\s*[\.\)]?\s*([A-ZÀ-Ú][^\n\d]{3,90})$"
+        for m in re.finditer(padrao, texto):
+            numero = m.group(1)
+            titulo = " ".join(m.group(2).split()).strip(" .")
+            letras = [c for c in titulo if c.isalpha()]
+            if len(titulo) < 4 or not letras:
+                continue
+            if sum(1 for c in letras if c.isupper()) / len(letras) < 0.7:
+                continue
+            chave = re.sub(r"[^A-ZÀ-Ú]", "", titulo.upper())
+            brutos.append({"numero": numero, "titulo": titulo, "chave": chave, "posicao": m.start()})
+
+        secoes, repetidos = [], []
+        for b in brutos:
+            igual = next(
+                (s for s in secoes
+                 if s["numero"] == b["numero"]
+                 and (s["chave"].startswith(b["chave"]) or b["chave"].startswith(s["chave"]))),
+                None,
+            )
+            if igual:
+                if len(b["chave"]) > len(igual["chave"]):
+                    igual["titulo"], igual["chave"] = b["titulo"], b["chave"]
+                continue
+            if any(s["numero"] == b["numero"] for s in secoes) and b["numero"] not in repetidos:
+                repetidos.append(b["numero"])
+            secoes.append(b)
+
+        return {
+            "secoes": [
+                {"numero": s["numero"], "titulo": s["titulo"], "nivel": 1 if "." not in s["numero"] else 2}
+                for s in secoes
+            ],
+            "numeros_repetidos": sorted(repetidos),
+        }
+
+
+
+
+import re
+
+class Tools:
+    def __init__(self):
+        pass
+
+    def verificar_detalhamento_sancoes(self, texto: str) -> dict:
+        """
+        Verifica se a cláusula de sanções detalha os elementos exigidos pelo
+        art. 156 da Lei 14.133/2021: percentual/valor de multa, prazo de
+        impedimento de licitar ou declaração de inidoneidade, e critérios de
+        dosimetria/gradação da penalidade. Retorna o que foi encontrado e uma
+        classificação sugerida.
+        """
+        texto = texto or ""
+        t = texto.lower()
+        tem_multa_percentual = bool(re.search(r"multa[^.]{0,200}?\d+\s*%|\d+\s*%[^.]{0,200}?multa", t))
+        tem_prazo_impedimento = bool(re.search(r"impedimento[^.]{0,150}?\d+\s*\(?\w*\)?\s*anos|inidone[oi]dade[^.]{0,150}?\d+\s*\(?\w*\)?\s*anos", t))
+        tem_dosimetria = bool(re.search(r"dosimetria|gradua[çc][ãa]o|natureza e a gravidade|circunst[âa]ncias agravantes|circunst[âa]ncias atenuantes", t))
+        tem_mencao_generica = bool(re.search(r"san[çc][ãa]o|penalidade|multa", t))
+
+        elementos = sum([tem_multa_percentual, tem_prazo_impedimento, tem_dosimetria])
+        if elementos >= 2:
+            sugestao = "atendido"
+        elif tem_mencao_generica:
+            sugestao = "parcial"
+        else:
+            sugestao = "não atendido"
+
+        return {
+            "multa_com_percentual": tem_multa_percentual,
+            "prazo_impedimento_ou_inidoneidade": tem_prazo_impedimento,
+            "criterios_dosimetria": tem_dosimetria,
+            "mencao_generica_a_sancoes": tem_mencao_generica,
+            "classificacao_sugerida": sugestao
+        }
+
+
+
+
+
+
+from datetime import datetime
+
+
+class Tools:
+    def __init__(self):
+        pass
+
+    def checar_datas_conflitantes(self, datas: list) -> list:
+        """
+        Recebe uma lista de datas rotuladas, ex:
+        [{"label": "início da vigência", "data": "2026-01-10"},
+         {"label": "prazo de execução", "data": "2026-01-05"}]
+        e sinaliza pares onde a ordem lógica esperada (início antes de fim) é
+        violada. Datas no formato AAAA-MM-DD.
+        """
+        parsed = []
+        for d in datas or []:
+            try:
+                parsed.append({"label": d["label"], "data": datetime.strptime(d["data"], "%Y-%m-%d")})
+            except Exception:
+                parsed.append({"label": d.get("label", "?"), "data": None, "erro": "formato inválido"})
+
+        conflitos = []
+        for i in range(len(parsed)):
+            for j in range(i + 1, len(parsed)):
+                a, b = parsed[i], parsed[j]
+                if a["data"] and b["data"] and a["data"] > b["data"]:
+                    conflitos.append({
+                        "anterior_esperado": a["label"],
+                        "data_anterior": a["data"].strftime("%Y-%m-%d"),
+                        "posterior_esperado": b["label"],
+                        "data_posterior": b["data"].strftime("%Y-%m-%d"),
+                        "observacao": f'"{a["label"]}" está depois de "{b["label"]}" — checar se é intencional',
+                    })
+
+        return conflitos
+
+
+
+
+
+
+import re
+
+class Tools:
+    def __init__(self):
+        pass
+
+    def extrair_prazos_do_texto(self, texto: str) -> list:
+        """
+        Localiza TODAS as menções a prazos em dias (corridos ou úteis) no texto
+        e classifica cada uma pelo contexto próximo — entrega, recebimento
+        provisório, recebimento definitivo, garantia ou outro — para não
+        confundir prazos diferentes que aparecem na mesma seção do documento
+        (ex: prazo de entrega x prazo para emitir Termo de Recebimento
+        Definitivo).
+        """
+        texto = texto or ""
+        resultados = []
+        for m in re.finditer(r"(\d+)\s*(?:\([^)]{0,30}\))?\s*dias\s*(corridos|úteis)", texto, re.IGNORECASE):
+            ini = max(0, m.start() - 100)
+            fim = min(len(texto), m.end() + 100)
+            contexto = texto[ini:fim].lower()
+            if "recebimento definitivo" in contexto:
+                categoria = "prazo_emissao_termo_recebimento_definitivo"
+            elif "recebimento provis" in contexto:
+                categoria = "prazo_recebimento_provisorio"
+            elif "garantia" in contexto:
+                categoria = "prazo_garantia"
+            elif "entrega" in contexto:
+                categoria = "prazo_entrega"
+            else:
+                categoria = "outro"
+            resultados.append({
+                "categoria": categoria,
+                "valor": int(m.group(1)),
+                "unidade": m.group(2).lower(),
+                "trecho": texto[max(0, m.start()-80):min(len(texto), m.end()+20)].strip()
+            })
+        return resultados
+
+
+
+
+
+import re
+
+class Tools:
+    def __init__(self):
+        pass
+
+    def verificar_total_calculado(self, valor_unitario: str, quantidade: str, valor_total_declarado: str) -> dict:
+        """
+        Confere se valor_unitario × quantidade bate com valor_total_declarado
+        (formato brasileiro, ex: "R$ 585,00"). Use antes de reportar qualquer
+        divergência entre valor unitário, quantidade e total.
+        """
+        def normalizar(v: str) -> float:
+            limpo = re.sub(r"[^\d,.-]", "", v or "")
+            limpo = limpo.replace(".", "").replace(",", ".")
+            return float(limpo) if limpo else 0.0
+
+        unit = normalizar(valor_unitario)
+        qtd = normalizar(quantidade)
+        total_declarado = normalizar(valor_total_declarado)
+        total_calculado = round(unit * qtd, 2)
+
+        return {
+            "valor_unitario": unit,
+            "quantidade": qtd,
+            "total_calculado": total_calculado,
+            "total_declarado": total_declarado,
+            "confere": abs(total_calculado - total_declarado) < 0.01,
+            "diferenca": round(total_calculado - total_declarado, 2),
+        }
+
+
+
+
+
+import re
+
+class Tools:
+    def __init__(self):
+        pass
+
+    def verificar_clausulas_obrigatorias(self, texto: str) -> dict:
+        """
+        Varre o texto em busca de palavras-chave associadas a cada um dos 7
+        requisitos obrigatórios da Lei 14.133/2021 e retorna, para cada um,
+        se foi encontrada menção e o trecho correspondente. Não substitui a
+        análise de suficiência — só identifica presença/ausência.
+        """
+        topicos = {
+            "subcontratacao": [r"subcontrata"],
+            "matriz_de_riscos": [r"matriz de risco"],
+            "garantias": [r"garantia contratual", r"garantia de execu[çc][ãa]o", r"\bgarantia\b"],
+            "reajuste_repactuacao": [r"reajuste", r"repactua"],
+            "fiscalizacao": [r"fiscaliza[çc][ãa]o", r"fiscal do contrato"],
+            "recebimento_do_objeto": [r"recebimento provis[óo]rio", r"recebimento definitivo", r"recebimento do objeto"],
+            "penalidades_sancoes": [r"penalidade", r"san[çc][ãa]o", r"multa"],
+        }
+
+        resultado = {}
+        for topico, padroes in topicos.items():
+            encontrado = False
+            trechos = []
+            for padrao in padroes:
+                for m in re.finditer(padrao, texto or "", re.IGNORECASE):
+                    encontrado = True
+                    inicio = max(0, m.start() - 60)
+                    fim = min(len(texto), m.end() + 60)
+                    trechos.append(texto[inicio:fim].strip())
+            resultado[topico] = {
+                "mencionado": encontrado,
+                "trechos": trechos[:3],
+            }
+
+        return resultado
+
+
+
+
+
+import re
+
+
+class Tools:
+    def __init__(self):
+        pass
+
+    def verificar_referencias_cruzadas(self, texto: str) -> dict:
+        """
+        Extrai toda citação a item/subitem no texto (ex: "item 3.2", "conforme
+        item 5.4") e verifica se esse item realmente existe no documento.
+        Retorna as referências que apontam pra item inexistente.
+        """
+        marcador_padrao = re.compile(r"^\s*(\d+(?:\.\d+)*)\.?\s", re.MULTILINE)
+        itens_existentes = set(marcador_padrao.findall(texto or ""))
+
+        referencia_padrao = re.compile(r"(?:item|subitem)\s+(?:n[ºo]\s*)?(\d+(?:\.\d+)*)", re.IGNORECASE)
+        referencias_citadas = referencia_padrao.findall(texto or "")
+
+        quebradas = [r for r in referencias_citadas if r not in itens_existentes]
+
+        return {
+            "itens_existentes": sorted(itens_existentes),
+            "referencias_citadas": referencias_citadas,
+            "referencias_quebradas": quebradas,
+        }
+
+
+
+
+
+
+import re
+
+
+class Tools:
+    def __init__(self):
+        pass
+
+    def comparar_valores_monetarios(self, valor1: str, valor2: str) -> dict:
+        """
+        Normaliza dois valores monetários em formato brasileiro e informa se são
+        iguais, e a diferença caso não sejam.
+        """
+        def normalizar(v: str) -> float:
+            limpo = re.sub(r"[^\d,.-]", "", v or "")
+            limpo = limpo.replace(".", "").replace(",", ".")
+            return float(limpo) if limpo else 0.0
+
+        n1, n2 = normalizar(valor1), normalizar(valor2)
+
+        return {
+            "valor1_normalizado": n1,
+            "valor2_normalizado": n2,
+            "iguais": n1 == n2,
+            "diferenca": round(n1 - n2, 2),
+        }
+
+
+
+
+
+
+import re
+import requests
+
+
+class Tools:
+    def __init__(self):
+        pass
+
+    def validar_cep(self, cep: str, endereco_esperado: str = "") -> dict:
+        """
+        Valida o formato de um CEP e consulta a API pública ViaCEP para conferir
+        se o endereço retornado bate com o esperado. Requer rede liberada para
+        viacep.com.br — se indisponível, retorna só a validação de formato.
+        """
+        digitos = re.sub(r"\D", "", cep or "")
+
+        if len(digitos) != 8:
+            return {"valido_formato": False, "motivo": "CEP deve ter 8 dígitos", "cep_normalizado": digitos}
+
+        cep_formatado = f"{digitos[0:5]}-{digitos[5:8]}"
+        resultado = {"valido_formato": True, "cep_normalizado": cep_formatado}
+
+        try:
+            resp = requests.get(f"https://viacep.com.br/ws/{digitos}/json/", timeout=5)
+            data = resp.json()
+            if data.get("erro"):
+                resultado["existe"] = False
+            else:
+                resultado["existe"] = True
+                resultado["endereco_oficial"] = f"{data.get('logradouro', '')}, {data.get('bairro', '')}, {data.get('localidade', '')}/{data.get('uf', '')}"
+                if endereco_esperado:
+                    resultado["confere_com_esperado"] = endereco_esperado.lower() in resultado["endereco_oficial"].lower()
+        except Exception as e:
+            resultado["consulta_externa"] = f"indisponível: {e}"
+
+        return resultado
+
+
+
+
+
+
+import re
+
+
+class Tools:
+    def __init__(self):
+        pass
+
+    def validar_cnpj(self, cnpj: str) -> dict:
+        """
+        Valida um CNPJ (formato e dígitos verificadores).
+        Use antes de reportar um CNPJ como incorreto num documento.
+        """
+        digitos = re.sub(r"\D", "", cnpj or "")
+
+        if len(digitos) != 14:
+            return {"valido": False, "motivo": "CNPJ deve ter 14 dígitos", "cnpj_normalizado": digitos}
+
+        if digitos == digitos[0] * 14:
+            return {"valido": False, "motivo": "Todos os dígitos iguais", "cnpj_normalizado": digitos}
+
+        def calcular_dv(cnpj_parcial: str, pesos: list) -> int:
+            soma = sum(int(d) * p for d, p in zip(cnpj_parcial, pesos))
+            resto = soma % 11
+            return 0 if resto < 2 else 11 - resto
+
+        pesos1 = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
+        pesos2 = [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
+
+        dv1 = calcular_dv(digitos[:12], pesos1)
+        dv2 = calcular_dv(digitos[:12] + str(dv1), pesos2)
+
+        valido = digitos[-2:] == f"{dv1}{dv2}"
+        cnpj_formatado = f"{digitos[0:2]}.{digitos[2:5]}.{digitos[5:8]}/{digitos[8:12]}-{digitos[12:14]}"
+
+        return {
+            "valido": valido,
+            "motivo": "Dígitos verificadores corretos" if valido else "Dígito verificador inválido",
+            "cnpj_normalizado": cnpj_formatado,
+        }
+
+
+
+
+
+
+
+import re
+
+
+class Tools:
+    def __init__(self):
+        pass
+
+    def verificar_numeracao_sequencial(self, texto: str) -> list:
+        """
+        Encontra marcadores de item/subitem no formato "1.", "1.1", "1.1.1" etc.
+        num texto e retorna os pontos onde a sequência quebra (pulo ou repetição).
+        """
+        padrao = re.compile(r"^\s*(\d+(?:\.\d+)*)\.?\s", re.MULTILINE)
+        achados = padrao.findall(texto or "")
+
+        problemas = []
+        anteriores_por_nivel = {}
+
+        for item in achados:
+            partes = [int(p) for p in item.split(".")]
+            nivel = len(partes)
+            atual = partes[-1]
+            anterior = anteriores_por_nivel.get(nivel)
+
+            if anterior is not None and atual not in (anterior, anterior + 1):
+                problemas.append({
+                    "item": item,
+                    "nivel": nivel,
+                    "esperado": anterior + 1,
+                    "encontrado": atual,
+                })
+
+            anteriores_por_nivel[nivel] = atual
+            for n in list(anteriores_por_nivel):
+                if n > nivel:
+                    del anteriores_por_nivel[n]
+
+        return problemas

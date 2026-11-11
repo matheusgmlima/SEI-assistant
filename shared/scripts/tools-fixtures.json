@@ -1,0 +1,256 @@
+[
+ {
+  "tool": "extrair_mencoes_numericas_temporais",
+  "nome": "TR sintético",
+  "args": [
+   "TRIBUNAL DE JUSTIÇA DO ESTADO DE PERNAMBUCO\nTERMO DE REFERÊNCIA Nº 017/2026\nProcesso SEI nº 00012345-67.2026.8.17.8017\n\n1. DO OBJETO\n1.1. Contratação de empresa especializada em limpeza, pelo valor global estimado de R$ 480.000,00 (quatrocentos e oitenta mil reais).\n2. DO QUANTITATIVO\n2.1. Serão contratados 20 (vinte) postos de serventes de limpeza, conforme item 2.2.\n2.2. Distribuição dos postos conforme tabela.\n2.4. Item com numeração pulada.\n3. DA JUSTIFICATIVA\n3.1. Conforme item 5.4 do Estudo Técnico Preliminar e subitem nº 2.2.\n5. DA VIGÊNCIA\n5.1. O contrato terá vigência de 12 (doze) meses, contados da assinatura, com reajuste anual e repactuação.\n5.1. Subitem repetido.\n6. DO PAGAMENTO\n6.1. A entrega deverá ser efetivada no prazo de 30 (trinta) dias corridos.\n6.2. O termo de recebimento definitivo será emitido em 5 (cinco) dias úteis.\n6.3. A garantia dos bens será de 90 dias corridos, exigida garantia contratual de execução.\n7. DAS SANÇÕES\n7.1. Multa de 10% (dez por cento) sobre o valor, e de 0,5% ao dia.\n7.2. Impedimento de licitar pelo prazo de até 3 (três) anos, observada a natureza e a gravidade da infração.\n7.3. Fiscalização pelo fiscal do contrato; recebimento provisório em 2 dias úteis; é vedada a subcontratação.\n8. DISPOSIÇÕES FINAIS\n8.1. Contato: (81) 3182-0000, (81) 99876-5432, e-mail licitação@tjpe.jus.br e compras@tjpe.jus.br. CEP 50010-000.\n8.2. CNPJ válido 11.222.333/0001-81, inválido 12.345.678/0001-90, sem máscara 11222333000181 e todos iguais 11.111.111/1111-11.\n8.3. Recife, 10 de Novembro de 2026; publicado em 01/02/2026 e 1 de março de 2026.\n8.4. Valor mensal de R$ 40.000,00 e R$ 1.234,56; 1.200 (mil e duzentos) unidades; 50 (Cinquenta) itens; 18.1.3 (três); 20 (vinte) % do total; 15 (quinze) por cento.\n9. Do Pagamento Em Minúsculas\n10. NÚMERO 14.133 NO TÍTULO\n11. DA MATRIZ DE RISCOS E PENALIDADES\n"
+  ]
+ },
+ {
+  "tool": "extrair_mencoes_numericas_temporais",
+  "nome": "texto sem cláusulas",
+  "args": [
+   "Documento sem sanções, apenas texto corrido. A empresa deverá cumprir o contrato e ser fiscalizada.\n1. ÚNICO\n1.1. Texto."
+  ]
+ },
+ {
+  "tool": "extrair_mencoes_numericas_temporais",
+  "nome": "texto vazio",
+  "args": [
+   ""
+  ]
+ },
+ {
+  "tool": "extrair_dados_institucionais",
+  "nome": "TR sintético",
+  "args": [
+   "TRIBUNAL DE JUSTIÇA DO ESTADO DE PERNAMBUCO\nTERMO DE REFERÊNCIA Nº 017/2026\nProcesso SEI nº 00012345-67.2026.8.17.8017\n\n1. DO OBJETO\n1.1. Contratação de empresa especializada em limpeza, pelo valor global estimado de R$ 480.000,00 (quatrocentos e oitenta mil reais).\n2. DO QUANTITATIVO\n2.1. Serão contratados 20 (vinte) postos de serventes de limpeza, conforme item 2.2.\n2.2. Distribuição dos postos conforme tabela.\n2.4. Item com numeração pulada.\n3. DA JUSTIFICATIVA\n3.1. Conforme item 5.4 do Estudo Técnico Preliminar e subitem nº 2.2.\n5. DA VIGÊNCIA\n5.1. O contrato terá vigência de 12 (doze) meses, contados da assinatura, com reajuste anual e repactuação.\n5.1. Subitem repetido.\n6. DO PAGAMENTO\n6.1. A entrega deverá ser efetivada no prazo de 30 (trinta) dias corridos.\n6.2. O termo de recebimento definitivo será emitido em 5 (cinco) dias úteis.\n6.3. A garantia dos bens será de 90 dias corridos, exigida garantia contratual de execução.\n7. DAS SANÇÕES\n7.1. Multa de 10% (dez por cento) sobre o valor, e de 0,5% ao dia.\n7.2. Impedimento de licitar pelo prazo de até 3 (três) anos, observada a natureza e a gravidade da infração.\n7.3. Fiscalização pelo fiscal do contrato; recebimento provisório em 2 dias úteis; é vedada a subcontratação.\n8. DISPOSIÇÕES FINAIS\n8.1. Contato: (81) 3182-0000, (81) 99876-5432, e-mail licitação@tjpe.jus.br e compras@tjpe.jus.br. CEP 50010-000.\n8.2. CNPJ válido 11.222.333/0001-81, inválido 12.345.678/0001-90, sem máscara 11222333000181 e todos iguais 11.111.111/1111-11.\n8.3. Recife, 10 de Novembro de 2026; publicado em 01/02/2026 e 1 de março de 2026.\n8.4. Valor mensal de R$ 40.000,00 e R$ 1.234,56; 1.200 (mil e duzentos) unidades; 50 (Cinquenta) itens; 18.1.3 (três); 20 (vinte) % do total; 15 (quinze) por cento.\n9. Do Pagamento Em Minúsculas\n10. NÚMERO 14.133 NO TÍTULO\n11. DA MATRIZ DE RISCOS E PENALIDADES\n"
+  ]
+ },
+ {
+  "tool": "extrair_dados_institucionais",
+  "nome": "texto sem cláusulas",
+  "args": [
+   "Documento sem sanções, apenas texto corrido. A empresa deverá cumprir o contrato e ser fiscalizada.\n1. ÚNICO\n1.1. Texto."
+  ]
+ },
+ {
+  "tool": "extrair_dados_institucionais",
+  "nome": "texto vazio",
+  "args": [
+   ""
+  ]
+ },
+ {
+  "tool": "listar_secoes_do_documento",
+  "nome": "TR sintético",
+  "args": [
+   "TRIBUNAL DE JUSTIÇA DO ESTADO DE PERNAMBUCO\nTERMO DE REFERÊNCIA Nº 017/2026\nProcesso SEI nº 00012345-67.2026.8.17.8017\n\n1. DO OBJETO\n1.1. Contratação de empresa especializada em limpeza, pelo valor global estimado de R$ 480.000,00 (quatrocentos e oitenta mil reais).\n2. DO QUANTITATIVO\n2.1. Serão contratados 20 (vinte) postos de serventes de limpeza, conforme item 2.2.\n2.2. Distribuição dos postos conforme tabela.\n2.4. Item com numeração pulada.\n3. DA JUSTIFICATIVA\n3.1. Conforme item 5.4 do Estudo Técnico Preliminar e subitem nº 2.2.\n5. DA VIGÊNCIA\n5.1. O contrato terá vigência de 12 (doze) meses, contados da assinatura, com reajuste anual e repactuação.\n5.1. Subitem repetido.\n6. DO PAGAMENTO\n6.1. A entrega deverá ser efetivada no prazo de 30 (trinta) dias corridos.\n6.2. O termo de recebimento definitivo será emitido em 5 (cinco) dias úteis.\n6.3. A garantia dos bens será de 90 dias corridos, exigida garantia contratual de execução.\n7. DAS SANÇÕES\n7.1. Multa de 10% (dez por cento) sobre o valor, e de 0,5% ao dia.\n7.2. Impedimento de licitar pelo prazo de até 3 (três) anos, observada a natureza e a gravidade da infração.\n7.3. Fiscalização pelo fiscal do contrato; recebimento provisório em 2 dias úteis; é vedada a subcontratação.\n8. DISPOSIÇÕES FINAIS\n8.1. Contato: (81) 3182-0000, (81) 99876-5432, e-mail licitação@tjpe.jus.br e compras@tjpe.jus.br. CEP 50010-000.\n8.2. CNPJ válido 11.222.333/0001-81, inválido 12.345.678/0001-90, sem máscara 11222333000181 e todos iguais 11.111.111/1111-11.\n8.3. Recife, 10 de Novembro de 2026; publicado em 01/02/2026 e 1 de março de 2026.\n8.4. Valor mensal de R$ 40.000,00 e R$ 1.234,56; 1.200 (mil e duzentos) unidades; 50 (Cinquenta) itens; 18.1.3 (três); 20 (vinte) % do total; 15 (quinze) por cento.\n9. Do Pagamento Em Minúsculas\n10. NÚMERO 14.133 NO TÍTULO\n11. DA MATRIZ DE RISCOS E PENALIDADES\n"
+  ]
+ },
+ {
+  "tool": "listar_secoes_do_documento",
+  "nome": "texto sem cláusulas",
+  "args": [
+   "Documento sem sanções, apenas texto corrido. A empresa deverá cumprir o contrato e ser fiscalizada.\n1. ÚNICO\n1.1. Texto."
+  ]
+ },
+ {
+  "tool": "listar_secoes_do_documento",
+  "nome": "texto vazio",
+  "args": [
+   ""
+  ]
+ },
+ {
+  "tool": "verificar_detalhamento_sancoes",
+  "nome": "TR sintético",
+  "args": [
+   "TRIBUNAL DE JUSTIÇA DO ESTADO DE PERNAMBUCO\nTERMO DE REFERÊNCIA Nº 017/2026\nProcesso SEI nº 00012345-67.2026.8.17.8017\n\n1. DO OBJETO\n1.1. Contratação de empresa especializada em limpeza, pelo valor global estimado de R$ 480.000,00 (quatrocentos e oitenta mil reais).\n2. DO QUANTITATIVO\n2.1. Serão contratados 20 (vinte) postos de serventes de limpeza, conforme item 2.2.\n2.2. Distribuição dos postos conforme tabela.\n2.4. Item com numeração pulada.\n3. DA JUSTIFICATIVA\n3.1. Conforme item 5.4 do Estudo Técnico Preliminar e subitem nº 2.2.\n5. DA VIGÊNCIA\n5.1. O contrato terá vigência de 12 (doze) meses, contados da assinatura, com reajuste anual e repactuação.\n5.1. Subitem repetido.\n6. DO PAGAMENTO\n6.1. A entrega deverá ser efetivada no prazo de 30 (trinta) dias corridos.\n6.2. O termo de recebimento definitivo será emitido em 5 (cinco) dias úteis.\n6.3. A garantia dos bens será de 90 dias corridos, exigida garantia contratual de execução.\n7. DAS SANÇÕES\n7.1. Multa de 10% (dez por cento) sobre o valor, e de 0,5% ao dia.\n7.2. Impedimento de licitar pelo prazo de até 3 (três) anos, observada a natureza e a gravidade da infração.\n7.3. Fiscalização pelo fiscal do contrato; recebimento provisório em 2 dias úteis; é vedada a subcontratação.\n8. DISPOSIÇÕES FINAIS\n8.1. Contato: (81) 3182-0000, (81) 99876-5432, e-mail licitação@tjpe.jus.br e compras@tjpe.jus.br. CEP 50010-000.\n8.2. CNPJ válido 11.222.333/0001-81, inválido 12.345.678/0001-90, sem máscara 11222333000181 e todos iguais 11.111.111/1111-11.\n8.3. Recife, 10 de Novembro de 2026; publicado em 01/02/2026 e 1 de março de 2026.\n8.4. Valor mensal de R$ 40.000,00 e R$ 1.234,56; 1.200 (mil e duzentos) unidades; 50 (Cinquenta) itens; 18.1.3 (três); 20 (vinte) % do total; 15 (quinze) por cento.\n9. Do Pagamento Em Minúsculas\n10. NÚMERO 14.133 NO TÍTULO\n11. DA MATRIZ DE RISCOS E PENALIDADES\n"
+  ]
+ },
+ {
+  "tool": "verificar_detalhamento_sancoes",
+  "nome": "texto sem cláusulas",
+  "args": [
+   "Documento sem sanções, apenas texto corrido. A empresa deverá cumprir o contrato e ser fiscalizada.\n1. ÚNICO\n1.1. Texto."
+  ]
+ },
+ {
+  "tool": "verificar_detalhamento_sancoes",
+  "nome": "texto vazio",
+  "args": [
+   ""
+  ]
+ },
+ {
+  "tool": "verificar_clausulas_obrigatorias",
+  "nome": "TR sintético",
+  "args": [
+   "TRIBUNAL DE JUSTIÇA DO ESTADO DE PERNAMBUCO\nTERMO DE REFERÊNCIA Nº 017/2026\nProcesso SEI nº 00012345-67.2026.8.17.8017\n\n1. DO OBJETO\n1.1. Contratação de empresa especializada em limpeza, pelo valor global estimado de R$ 480.000,00 (quatrocentos e oitenta mil reais).\n2. DO QUANTITATIVO\n2.1. Serão contratados 20 (vinte) postos de serventes de limpeza, conforme item 2.2.\n2.2. Distribuição dos postos conforme tabela.\n2.4. Item com numeração pulada.\n3. DA JUSTIFICATIVA\n3.1. Conforme item 5.4 do Estudo Técnico Preliminar e subitem nº 2.2.\n5. DA VIGÊNCIA\n5.1. O contrato terá vigência de 12 (doze) meses, contados da assinatura, com reajuste anual e repactuação.\n5.1. Subitem repetido.\n6. DO PAGAMENTO\n6.1. A entrega deverá ser efetivada no prazo de 30 (trinta) dias corridos.\n6.2. O termo de recebimento definitivo será emitido em 5 (cinco) dias úteis.\n6.3. A garantia dos bens será de 90 dias corridos, exigida garantia contratual de execução.\n7. DAS SANÇÕES\n7.1. Multa de 10% (dez por cento) sobre o valor, e de 0,5% ao dia.\n7.2. Impedimento de licitar pelo prazo de até 3 (três) anos, observada a natureza e a gravidade da infração.\n7.3. Fiscalização pelo fiscal do contrato; recebimento provisório em 2 dias úteis; é vedada a subcontratação.\n8. DISPOSIÇÕES FINAIS\n8.1. Contato: (81) 3182-0000, (81) 99876-5432, e-mail licitação@tjpe.jus.br e compras@tjpe.jus.br. CEP 50010-000.\n8.2. CNPJ válido 11.222.333/0001-81, inválido 12.345.678/0001-90, sem máscara 11222333000181 e todos iguais 11.111.111/1111-11.\n8.3. Recife, 10 de Novembro de 2026; publicado em 01/02/2026 e 1 de março de 2026.\n8.4. Valor mensal de R$ 40.000,00 e R$ 1.234,56; 1.200 (mil e duzentos) unidades; 50 (Cinquenta) itens; 18.1.3 (três); 20 (vinte) % do total; 15 (quinze) por cento.\n9. Do Pagamento Em Minúsculas\n10. NÚMERO 14.133 NO TÍTULO\n11. DA MATRIZ DE RISCOS E PENALIDADES\n"
+  ]
+ },
+ {
+  "tool": "verificar_clausulas_obrigatorias",
+  "nome": "texto sem cláusulas",
+  "args": [
+   "Documento sem sanções, apenas texto corrido. A empresa deverá cumprir o contrato e ser fiscalizada.\n1. ÚNICO\n1.1. Texto."
+  ]
+ },
+ {
+  "tool": "verificar_clausulas_obrigatorias",
+  "nome": "texto vazio",
+  "args": [
+   ""
+  ]
+ },
+ {
+  "tool": "extrair_prazos_do_texto",
+  "nome": "TR sintético",
+  "args": [
+   "TRIBUNAL DE JUSTIÇA DO ESTADO DE PERNAMBUCO\nTERMO DE REFERÊNCIA Nº 017/2026\nProcesso SEI nº 00012345-67.2026.8.17.8017\n\n1. DO OBJETO\n1.1. Contratação de empresa especializada em limpeza, pelo valor global estimado de R$ 480.000,00 (quatrocentos e oitenta mil reais).\n2. DO QUANTITATIVO\n2.1. Serão contratados 20 (vinte) postos de serventes de limpeza, conforme item 2.2.\n2.2. Distribuição dos postos conforme tabela.\n2.4. Item com numeração pulada.\n3. DA JUSTIFICATIVA\n3.1. Conforme item 5.4 do Estudo Técnico Preliminar e subitem nº 2.2.\n5. DA VIGÊNCIA\n5.1. O contrato terá vigência de 12 (doze) meses, contados da assinatura, com reajuste anual e repactuação.\n5.1. Subitem repetido.\n6. DO PAGAMENTO\n6.1. A entrega deverá ser efetivada no prazo de 30 (trinta) dias corridos.\n6.2. O termo de recebimento definitivo será emitido em 5 (cinco) dias úteis.\n6.3. A garantia dos bens será de 90 dias corridos, exigida garantia contratual de execução.\n7. DAS SANÇÕES\n7.1. Multa de 10% (dez por cento) sobre o valor, e de 0,5% ao dia.\n7.2. Impedimento de licitar pelo prazo de até 3 (três) anos, observada a natureza e a gravidade da infração.\n7.3. Fiscalização pelo fiscal do contrato; recebimento provisório em 2 dias úteis; é vedada a subcontratação.\n8. DISPOSIÇÕES FINAIS\n8.1. Contato: (81) 3182-0000, (81) 99876-5432, e-mail licitação@tjpe.jus.br e compras@tjpe.jus.br. CEP 50010-000.\n8.2. CNPJ válido 11.222.333/0001-81, inválido 12.345.678/0001-90, sem máscara 11222333000181 e todos iguais 11.111.111/1111-11.\n8.3. Recife, 10 de Novembro de 2026; publicado em 01/02/2026 e 1 de março de 2026.\n8.4. Valor mensal de R$ 40.000,00 e R$ 1.234,56; 1.200 (mil e duzentos) unidades; 50 (Cinquenta) itens; 18.1.3 (três); 20 (vinte) % do total; 15 (quinze) por cento.\n9. Do Pagamento Em Minúsculas\n10. NÚMERO 14.133 NO TÍTULO\n11. DA MATRIZ DE RISCOS E PENALIDADES\n"
+  ]
+ },
+ {
+  "tool": "extrair_prazos_do_texto",
+  "nome": "texto sem cláusulas",
+  "args": [
+   "Documento sem sanções, apenas texto corrido. A empresa deverá cumprir o contrato e ser fiscalizada.\n1. ÚNICO\n1.1. Texto."
+  ]
+ },
+ {
+  "tool": "extrair_prazos_do_texto",
+  "nome": "texto vazio",
+  "args": [
+   ""
+  ]
+ },
+ {
+  "tool": "verificar_referencias_cruzadas",
+  "nome": "TR sintético",
+  "args": [
+   "TRIBUNAL DE JUSTIÇA DO ESTADO DE PERNAMBUCO\nTERMO DE REFERÊNCIA Nº 017/2026\nProcesso SEI nº 00012345-67.2026.8.17.8017\n\n1. DO OBJETO\n1.1. Contratação de empresa especializada em limpeza, pelo valor global estimado de R$ 480.000,00 (quatrocentos e oitenta mil reais).\n2. DO QUANTITATIVO\n2.1. Serão contratados 20 (vinte) postos de serventes de limpeza, conforme item 2.2.\n2.2. Distribuição dos postos conforme tabela.\n2.4. Item com numeração pulada.\n3. DA JUSTIFICATIVA\n3.1. Conforme item 5.4 do Estudo Técnico Preliminar e subitem nº 2.2.\n5. DA VIGÊNCIA\n5.1. O contrato terá vigência de 12 (doze) meses, contados da assinatura, com reajuste anual e repactuação.\n5.1. Subitem repetido.\n6. DO PAGAMENTO\n6.1. A entrega deverá ser efetivada no prazo de 30 (trinta) dias corridos.\n6.2. O termo de recebimento definitivo será emitido em 5 (cinco) dias úteis.\n6.3. A garantia dos bens será de 90 dias corridos, exigida garantia contratual de execução.\n7. DAS SANÇÕES\n7.1. Multa de 10% (dez por cento) sobre o valor, e de 0,5% ao dia.\n7.2. Impedimento de licitar pelo prazo de até 3 (três) anos, observada a natureza e a gravidade da infração.\n7.3. Fiscalização pelo fiscal do contrato; recebimento provisório em 2 dias úteis; é vedada a subcontratação.\n8. DISPOSIÇÕES FINAIS\n8.1. Contato: (81) 3182-0000, (81) 99876-5432, e-mail licitação@tjpe.jus.br e compras@tjpe.jus.br. CEP 50010-000.\n8.2. CNPJ válido 11.222.333/0001-81, inválido 12.345.678/0001-90, sem máscara 11222333000181 e todos iguais 11.111.111/1111-11.\n8.3. Recife, 10 de Novembro de 2026; publicado em 01/02/2026 e 1 de março de 2026.\n8.4. Valor mensal de R$ 40.000,00 e R$ 1.234,56; 1.200 (mil e duzentos) unidades; 50 (Cinquenta) itens; 18.1.3 (três); 20 (vinte) % do total; 15 (quinze) por cento.\n9. Do Pagamento Em Minúsculas\n10. NÚMERO 14.133 NO TÍTULO\n11. DA MATRIZ DE RISCOS E PENALIDADES\n"
+  ]
+ },
+ {
+  "tool": "verificar_referencias_cruzadas",
+  "nome": "texto sem cláusulas",
+  "args": [
+   "Documento sem sanções, apenas texto corrido. A empresa deverá cumprir o contrato e ser fiscalizada.\n1. ÚNICO\n1.1. Texto."
+  ]
+ },
+ {
+  "tool": "verificar_referencias_cruzadas",
+  "nome": "texto vazio",
+  "args": [
+   ""
+  ]
+ },
+ {
+  "tool": "verificar_numeracao_sequencial",
+  "nome": "TR sintético",
+  "args": [
+   "TRIBUNAL DE JUSTIÇA DO ESTADO DE PERNAMBUCO\nTERMO DE REFERÊNCIA Nº 017/2026\nProcesso SEI nº 00012345-67.2026.8.17.8017\n\n1. DO OBJETO\n1.1. Contratação de empresa especializada em limpeza, pelo valor global estimado de R$ 480.000,00 (quatrocentos e oitenta mil reais).\n2. DO QUANTITATIVO\n2.1. Serão contratados 20 (vinte) postos de serventes de limpeza, conforme item 2.2.\n2.2. Distribuição dos postos conforme tabela.\n2.4. Item com numeração pulada.\n3. DA JUSTIFICATIVA\n3.1. Conforme item 5.4 do Estudo Técnico Preliminar e subitem nº 2.2.\n5. DA VIGÊNCIA\n5.1. O contrato terá vigência de 12 (doze) meses, contados da assinatura, com reajuste anual e repactuação.\n5.1. Subitem repetido.\n6. DO PAGAMENTO\n6.1. A entrega deverá ser efetivada no prazo de 30 (trinta) dias corridos.\n6.2. O termo de recebimento definitivo será emitido em 5 (cinco) dias úteis.\n6.3. A garantia dos bens será de 90 dias corridos, exigida garantia contratual de execução.\n7. DAS SANÇÕES\n7.1. Multa de 10% (dez por cento) sobre o valor, e de 0,5% ao dia.\n7.2. Impedimento de licitar pelo prazo de até 3 (três) anos, observada a natureza e a gravidade da infração.\n7.3. Fiscalização pelo fiscal do contrato; recebimento provisório em 2 dias úteis; é vedada a subcontratação.\n8. DISPOSIÇÕES FINAIS\n8.1. Contato: (81) 3182-0000, (81) 99876-5432, e-mail licitação@tjpe.jus.br e compras@tjpe.jus.br. CEP 50010-000.\n8.2. CNPJ válido 11.222.333/0001-81, inválido 12.345.678/0001-90, sem máscara 11222333000181 e todos iguais 11.111.111/1111-11.\n8.3. Recife, 10 de Novembro de 2026; publicado em 01/02/2026 e 1 de março de 2026.\n8.4. Valor mensal de R$ 40.000,00 e R$ 1.234,56; 1.200 (mil e duzentos) unidades; 50 (Cinquenta) itens; 18.1.3 (três); 20 (vinte) % do total; 15 (quinze) por cento.\n9. Do Pagamento Em Minúsculas\n10. NÚMERO 14.133 NO TÍTULO\n11. DA MATRIZ DE RISCOS E PENALIDADES\n"
+  ]
+ },
+ {
+  "tool": "verificar_numeracao_sequencial",
+  "nome": "texto sem cláusulas",
+  "args": [
+   "Documento sem sanções, apenas texto corrido. A empresa deverá cumprir o contrato e ser fiscalizada.\n1. ÚNICO\n1.1. Texto."
+  ]
+ },
+ {
+  "tool": "verificar_numeracao_sequencial",
+  "nome": "texto vazio",
+  "args": [
+   ""
+  ]
+ },
+ {
+  "tool": "verificar_total_calculado",
+  "nome": "confere",
+  "args": [
+   "R$ 585,00",
+   "10",
+   "R$ 5.850,00"
+  ]
+ },
+ {
+  "tool": "verificar_total_calculado",
+  "nome": "não confere",
+  "args": [
+   "R$ 1.234,56",
+   "3",
+   "R$ 3.700,00"
+  ]
+ },
+ {
+  "tool": "comparar_valores_monetarios",
+  "nome": "iguais formatos distintos",
+  "args": [
+   "R$ 1.234,56",
+   "1234,56"
+  ]
+ },
+ {
+  "tool": "comparar_valores_monetarios",
+  "nome": "diferentes",
+  "args": [
+   "R$ 480.000,00",
+   "R$ 460.000,00"
+  ]
+ },
+ {
+  "tool": "validar_cnpj",
+  "nome": "válido",
+  "args": [
+   "11.222.333/0001-81"
+  ]
+ },
+ {
+  "tool": "validar_cnpj",
+  "nome": "dv inválido",
+  "args": [
+   "12.345.678/0001-90"
+  ]
+ },
+ {
+  "tool": "validar_cnpj",
+  "nome": "todos iguais",
+  "args": [
+   "11111111111111"
+  ]
+ },
+ {
+  "tool": "validar_cnpj",
+  "nome": "curto",
+  "args": [
+   "123"
+  ]
+ },
+ {
+  "tool": "checar_datas_conflitantes",
+  "nome": "ordem invertida + formato ruim",
+  "args": [
+   [
+    {
+     "label": "início da vigência",
+     "data": "2026-01-10"
+    },
+    {
+     "label": "prazo de execução",
+     "data": "2026-01-05"
+    },
+    {
+     "label": "assinatura",
+     "data": "10/01/2026"
+    },
+    {
+     "label": "fim",
+     "data": "2026-12-31"
+    }
+   ]
+  ]
+ }
+]
