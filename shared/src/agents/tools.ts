@@ -21,6 +21,12 @@ function normalizarBR(v: string): number {
 }
 const round2 = (x: number) => Math.round(x * 100) / 100;
 
+/** Remove o sumário (linhas com pontilhado + nº de página) antes das ferramentas:
+ *  "1. OBJETO ........ 3" confundiria numeração, seções e referências. */
+export function semSumario(texto: string): string {
+  return texto.split("\n").filter((l) => !/\.{4,}\s*\d+\s*$/.test(l)).join("\n");
+}
+
 // ── Agente 6 ────────────────────────────────────────────────────────────────────
 export function extrair_mencoes_numericas_temporais(texto: string) {
   texto = texto || "";
@@ -141,16 +147,29 @@ export async function validar_cep(cep: string, endereco_esperado = "") {
 }
 
 // ── Agente 4 ────────────────────────────────────────────────────────────────────
+// CORRIGIDA em relação ao Python original, que descartava título com dígito
+// ("DA FUNDAMENTAÇÃO NA LEI 14.133") e título em Title Case ("Do Modelo De Execução").
+// Agora aceita os dois; linha de sumário ("OBJETO ....... 3") continua de fora.
+const MINUSCULAS_OK = new Set(["de", "da", "do", "das", "dos", "e", "a", "o", "as", "os", "em", "no", "na", "nos", "nas", "por", "para", "com", "ao", "aos", "à", "às"]);
+const ehTitleCase = (titulo: string) => {
+  const palavras = titulo.split(/\s+/).filter((w) => /\p{L}/u.test(w));
+  return palavras.length >= 2 && palavras.every((w, i) =>
+    (i > 0 && MINUSCULAS_OK.has(w.toLowerCase())) || isUpper([...w.replace(/^[^\p{L}]+/u, "")][0] ?? ""));
+};
+
 export function listar_secoes_do_documento(texto: string) {
   texto = texto || "";
   type Bruto = { numero: string; titulo: string; chave: string; posicao: number };
   const brutos: Bruto[] = [];
-  for (const m of texto.matchAll(/^\s*(\d{1,2}(?:\.\d{1,2})?)\s*[.)]?\s*([A-ZÀ-Ú][^\n\d]{3,90})$/gm)) {
+  // Número e título na MESMA linha: célula de tabela sozinha ("60") não vira seção.
+  for (const m of texto.matchAll(/^\s*(\d{1,2}(?:\.\d{1,2})?)[ \t]*[.)]?[ \t]*([A-ZÀ-Ú][^\n]{3,90})$/gm)) {
     const numero = m[1];
+    if (/\.{4,}\s*\d+\s*$/.test(m[2])) continue; // linha de sumário
     const titulo = squash(m[2]).replace(/^[ .]+|[ .]+$/g, "");
     const letras = [...titulo].filter(isAlpha);
     if (titulo.length < 4 || letras.length === 0) continue;
-    if (letras.filter(isUpper).length / letras.length < 0.7) continue;
+    const maiusculas = letras.filter(isUpper).length / letras.length >= 0.7;
+    if (!maiusculas && !ehTitleCase(titulo)) continue;
     const chave = titulo.toUpperCase().replace(/[^A-ZÀ-Ú]/g, "");
     brutos.push({ numero, titulo, chave, posicao: m.index! });
   }
@@ -218,22 +237,47 @@ export function verificar_clausulas_obrigatorias(texto: string) {
 }
 
 // ── Agente 2 ────────────────────────────────────────────────────────────────────
+// CORRIGIDA em relação ao Python original (que errava a categoria):
+// - contexto = só a FRASE do prazo (antes: ±100 chars, vazava para a linha seguinte);
+// - categoria = palavra-chave MAIS PRÓXIMA do número (antes: ordem fixa, "recebimento" ganhava sempre);
+// - aceita "30 (trinta) dias" sem "corridos/úteis" (unidade null) — antes era ignorado.
+const CATEGORIAS_PRAZO: [RegExp, string][] = [
+  [/recebimento definitivo/g, "prazo_emissao_termo_recebimento_definitivo"],
+  [/recebimento provis/g, "prazo_recebimento_provisorio"],
+  [/garantia/g, "prazo_garantia"],
+  [/entrega/g, "prazo_entrega"],
+  [/pagamento/g, "prazo_pagamento"],
+];
+// "em 10 dias APÓS O recebimento definitivo": o recebimento é ponto de referência, não o sujeito.
+const REFERENCIA = /(após|apos|contad[oa]s?\s+d[oa]s?|a\s+partir\s+d[oa]s?)\s*(o|a|os|as)?\s*$/;
+
 export function extrair_prazos_do_texto(texto: string) {
   texto = texto || "";
-  const out: { categoria: string; valor: number; unidade: string; trecho: string }[] = [];
-  for (const m of texto.matchAll(/(\d+)\s*(?:\([^)]{0,30}\))?\s*dias\s*(corridos|úteis)/giu)) {
-    const ini = Math.max(0, m.index! - 100);
-    const fim = Math.min(texto.length, m.index! + m[0].length + 100);
-    const ctx = texto.slice(ini, fim).toLowerCase();
-    const categoria = ctx.includes("recebimento definitivo") ? "prazo_emissao_termo_recebimento_definitivo"
-      : ctx.includes("recebimento provis") ? "prazo_recebimento_provisorio"
-      : ctx.includes("garantia") ? "prazo_garantia"
-      : ctx.includes("entrega") ? "prazo_entrega" : "outro";
+  const out: { categoria: string; valor: number; unidade: string | null; trecho: string }[] = [];
+  for (const m of texto.matchAll(/(\d+)\s*(?:\([^)]{0,30}\))?\s*dias(?:\s*(corridos|úteis))?/giu)) {
+    const pos = m.index!;
+    // Limites da frase: fim de frase anterior (". " ou ";") até o próximo.
+    const antes = texto.slice(Math.max(0, pos - 300), pos);
+    const corte = Math.max(antes.lastIndexOf(". "), antes.lastIndexOf(";"), antes.lastIndexOf(".\n"));
+    const ini = corte >= 0 ? pos - antes.length + corte + 1 : Math.max(0, pos - 300);
+    const depois = texto.slice(pos + m[0].length, pos + m[0].length + 300);
+    const fimRel = depois.search(/\.(\s|$)|;/);
+    const fim = pos + m[0].length + (fimRel >= 0 ? fimRel : depois.length);
+    const frase = texto.slice(ini, fim).toLowerCase();
+    const alvo = pos - ini;
+    let categoria = "outro", melhor = Infinity;
+    for (const [re, cat] of CATEGORIAS_PRAZO)
+      for (const k of frase.matchAll(re)) {
+        if (REFERENCIA.test(frase.slice(Math.max(0, k.index! - 25), k.index!))) continue;
+        // Sujeito costuma vir antes do número ("a entrega ... em 30 dias"): palavra depois pesa o dobro.
+        const d = k.index! < alvo ? alvo - k.index! : (k.index! - alvo) * 2;
+        if (d < melhor) { melhor = d; categoria = cat; }
+      }
     out.push({
       categoria,
       valor: Number(m[1]),
-      unidade: m[2].toLowerCase(),
-      trecho: texto.slice(Math.max(0, m.index! - 80), Math.min(texto.length, m.index! + m[0].length + 20)).trim(),
+      unidade: m[2] ? m[2].toLowerCase() : null,
+      trecho: squash(texto.slice(ini, fim)).slice(0, 200),
     });
   }
   return out;
@@ -255,11 +299,20 @@ export function verificar_total_calculado(valor_unitario: string, quantidade: st
   };
 }
 
-const MARCADOR = /^\s*(\d+(?:\.\d+)*)\.?\s/gm;
+// CORRIGIDO em relação ao Python (`^\s*(\d+(?:\.\d+)*)\.?\s`), que em PDF real pegava
+// célula de tabela sozinha na linha ("60") e linha quebrada que começa com número
+// ("15 no site do Banco"). Agora: texto na mesma linha, e marcador sem ponto
+// ("15 ") só vale se seguido de maiúscula.
+const MARCADOR = /^[ \t]*(\d+(?:\.\d+)*)(\.?)[ \t]+(?=(\S))/gm;
+function marcadores(texto: string): string[] {
+  return [...texto.matchAll(MARCADOR)]
+    .filter((m) => m[2] === "." || m[1].includes(".") || isUpper(m[3]))
+    .map((m) => m[1]);
+}
 
 export function verificar_referencias_cruzadas(texto: string) {
   texto = texto || "";
-  const existentes = new Set([...texto.matchAll(MARCADOR)].map((m) => m[1]));
+  const existentes = new Set(marcadores(texto));
   const citadas = [...texto.matchAll(/(?:item|subitem)\s+(?:n[ºo]\s*)?(\d+(?:\.\d+)*)/gi)].map((m) => m[1]);
   return {
     itens_existentes: [...existentes].sort(),
@@ -268,17 +321,27 @@ export function verificar_referencias_cruzadas(texto: string) {
   };
 }
 
+// CORRIGIDO: lista interna que reinicia em 1 (ex.: tabela de critérios "1. ... 2. ..."
+// dentro da seção 6) e depois volta à sequência principal (7.) não é numeração quebrada.
+// ponytail: só reconhece UM nível de lista interna por vez — suficiente nos TR/ETP vistos.
 export function verificar_numeracao_sequencial(texto: string) {
   const problemas: { item: string; nivel: number; esperado: number; encontrado: number }[] = [];
   const anteriores = new Map<number, number>();
-  for (const m of (texto || "").matchAll(MARCADOR)) {
-    const item = m[1];
+  let pausado: { nivel: number; valor: number } | null = null; // sequência principal suspensa
+  for (const item of marcadores(texto || "")) {
     const partes = item.split(".").map(Number);
     const nivel = partes.length;
     const atual = partes[nivel - 1];
+    if (pausado && nivel === pausado.nivel && atual === pausado.valor + 1) {
+      anteriores.set(nivel, pausado.valor); // lista interna acabou: retoma a principal
+      pausado = null;
+    }
     const anterior = anteriores.get(nivel);
-    if (anterior !== undefined && atual !== anterior && atual !== anterior + 1)
+    if (anterior !== undefined && atual === 1 && anterior > 1 && !pausado) {
+      pausado = { nivel, valor: anterior }; // entrou numa lista interna
+    } else if (anterior !== undefined && atual !== anterior && atual !== anterior + 1) {
       problemas.push({ item, nivel, esperado: anterior + 1, encontrado: atual });
+    }
     anteriores.set(nivel, atual);
     for (const n of [...anteriores.keys()]) if (n > nivel) anteriores.delete(n);
   }

@@ -4,5 +4,8 @@
   "version": "0.1.0",
   "main": "src/index.ts",
   "types": "src/index.ts",
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "pdfjs-dist": "^6.5.438"
+  }
 }

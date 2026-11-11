@@ -40,3 +40,4 @@ Thumbs.db
 
 # Pnpm
 pnpm-lock.yaml
+.agentes-saida/
