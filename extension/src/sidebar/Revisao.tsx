@@ -44,6 +44,9 @@ async function configLlm(papel: "agentes" | "controlador"): Promise<LlmConfig | 
   return { baseUrl: c.baseUrl, apiKey: c.apiKey, model: papel === "agentes" ? MODELO_PADRAO : MODELO_CONTROLADOR };
 }
 
+const abrirCorrecoes = (proc: string) =>
+  chrome.tabs.create({ url: chrome.runtime.getURL("dist/correcoes.html") + "?proc=" + encodeURIComponent(proc) });
+
 function enviarAbaAtiva<T>(msg: unknown): Promise<T> {
   return new Promise((resolve, reject) => chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     const id = tabs[0]?.id;
@@ -72,6 +75,10 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
   useEffect(() => {
     sget<RevisaoSalva | undefined>(`revisao_${processId}`).then((r) => setSalva(r ?? null));
     sget<Veredito[] | undefined>("vereditos").then((v) => setVereditos(v ?? []));
+    // a tela de correções também grava vereditos
+    const ouvir = (ch: Record<string, chrome.storage.StorageChange>) => { if (ch.vereditos) setVereditos((ch.vereditos.newValue as Veredito[]) ?? []); };
+    chrome.storage.onChanged.addListener(ouvir);
+    return () => chrome.storage.onChanged.removeListener(ouvir);
   }, [processId]);
 
   async function listar() {
@@ -116,6 +123,7 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
       const nova: RevisaoSalva = { em: new Date().toISOString(), modelo: cfg.model, documentos: documentos.map((d) => ({ nome: d.nome, caracteres: d.texto.length })), resultados: res };
       await sset({ [`revisao_${processId}`]: nova });
       setSalva(nova);
+      abrirCorrecoes(processId);
     } catch (e) { setErro(String((e as Error).message)); }
     setFase(null);
   }
@@ -175,6 +183,7 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
           <p className="processes-meta">
             Revisado em {new Date(salva.em).toLocaleString("pt-BR")} · {salva.documentos.length} doc(s) · {salva.modelo} · {Math.round(tokens / 1000)} mil tokens
           </p>
+          <button className="btn-collect" onClick={() => abrirCorrecoes(processId)}>📋 Abrir tela de correções</button>
           {salva.resultados.map((r) => <CartaoAgente key={r.agente} r={r} processId={processId} vereditos={vereditos} onVeredito={darVeredito} onFalta={registrarFalta} />)}
         </div>
       )}
@@ -225,8 +234,8 @@ function CartaoAgente({ r, processId, vereditos, onVeredito, onFalta }: {
                 ))}
                 {p.correcao && <div className="rev-corr">→ {p.correcao}</div>}
                 <div className="rev-veredito">
-                  <button className={meu === "procede" ? "on" : ""} onClick={() => onVeredito(r.agente, p, meu === "procede" ? null : "procede")}>✓ Procede</button>
-                  <button className={meu === "falso_positivo" ? "on fp" : ""} onClick={() => onVeredito(r.agente, p, meu === "falso_positivo" ? null : "falso_positivo")}>✗ Falso alarme</button>
+                  <button className={meu === "procede" ? "on" : ""} onClick={() => onVeredito(r.agente, p, meu === "procede" ? null : "procede")}>✓ Já alterei</button>
+                  <button className={meu === "falso_positivo" ? "on fp" : ""} onClick={() => onVeredito(r.agente, p, meu === "falso_positivo" ? null : "falso_positivo")}>✗ Não é válida</button>
                 </div>
               </div>
             );
