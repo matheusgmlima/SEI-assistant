@@ -34,7 +34,7 @@ writeFileSync(join(dir, "casos.json"), JSON.stringify(fixtures));
 const py = JSON.parse(execFileSync("python", ["-I", join(dir, "h.py"), join(here, "../src/agents/fonte/ferramentas.py.txt"), join(dir, "casos.json")], { encoding: "utf8" }));
 
 // Corrigidas de propósito em relação ao Python — conferidas por resultado esperado, não por paridade.
-const CORRIGIDAS = new Set(["extrair_prazos_do_texto", "listar_secoes_do_documento"]);
+const CORRIGIDAS = new Set(["extrair_prazos_do_texto", "listar_secoes_do_documento", "verificar_referencias_cruzadas"]);
 
 let falhas = 0;
 const check = (ok, nome, detalhe = "") => {
@@ -76,6 +76,18 @@ check(isDeepStrictEqual(sec.secoes.map((s) => s.numero + " " + s.titulo),
 const real = "6. PERFIL PROFISSIONAL\n1. Pós-graduação em gestão\n2. Experiência em compras\n- 30 pontos\n60\n" +
   "ANEXO I - TERMO DE REFERÊNCIA\n20\nPontuação Total 100\n7. PRAZO DE VIGÊNCIA\n" +
   "15 no site do Banco, e não poderá adjudicar\n8. REQUISITOS\n10. OBRIGAÇÕES";
+// Minuta real (BID): cláusulas por extenso + referências a outros documentos (TR, GN-2350-15)
+const minuta = `CLÁUSULA QUINTA – DO PAGAMENTO\n5.1. Texto.\n5.2. Texto.\nCLÁUSULA SEXTA – DO VALOR
+6.1. O valor global conforme estabelecido no item 15 do Anexo I – Termo de Referência.
+6.2. Nos termos do item 4.10(c) da GN-2350-15, caso o pagamento.\nCLÁUSULA DÉCIMA TERCEIRA – X
+13.1. Os relatórios previstos no item 13 e as atividades do item 4 do Anexo I – Termo de Referência.
+13.2. Conforme o item 13.9 deste contrato e o item 5.4 do Estudo Técnico Preliminar.\n13.4. Pulou.`;
+check(isDeepStrictEqual(ts.verificar_referencias_cruzadas(minuta).referencias_quebradas, ["13.9"]),
+  "corrigida verificar_referencias_cruzadas — referência a outro documento e cláusula por extenso não quebram; 13.9 interna quebra",
+  JSON.stringify(ts.verificar_referencias_cruzadas(minuta).referencias_quebradas));
+check(isDeepStrictEqual(ts.verificar_numeracao_sequencial(minuta), [{ item: "13.4", nivel: 2, esperado: 3, encontrado: 4 }]),
+  "corrigida verificar_numeracao_sequencial — 5.2 → 6.1 sob 'CLÁUSULA SEXTA' não é salto; 13.2 → 13.4 é",
+  JSON.stringify(ts.verificar_numeracao_sequencial(minuta)));
 check(isDeepStrictEqual(ts.verificar_numeracao_sequencial(real), [{ item: "10", nivel: 1, esperado: 9, encontrado: 10 }]),
   "corrigida verificar_numeracao_sequencial — lista interna/tabela/linha quebrada ignoradas, salto 8→10 detectado",
   JSON.stringify(ts.verificar_numeracao_sequencial(real)));

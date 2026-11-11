@@ -310,10 +310,28 @@ function marcadores(texto: string): string[] {
     .map((m) => m[1]);
 }
 
+// Minuta/contrato numeram cláusulas por extenso ("CLÁUSULA DÉCIMA TERCEIRA" = 13).
+const ORDINAL: Record<string, number> = {
+  primeira: 1, segunda: 2, terceira: 3, quarta: 4, quinta: 5, sexta: 6, "sétima": 7, setima: 7, oitava: 8, nona: 9,
+  "décima": 10, decima: 10, "vigésima": 20, vigesima: 20, "trigésima": 30, trigesima: 30,
+};
+function clausulasPorExtenso(texto: string): string[] {
+  return [...texto.matchAll(/cl[áa]usula\s+((?:\p{L}+[ \t]*){1,3})/giu)]
+    .map((m) => m[1].toLowerCase().split(/\s+/).reduce((t, w) => t + (ORDINAL[w] ?? 0), 0))
+    .filter((n) => n > 0).map(String);
+}
+
+// CORRIGIDO: referência a OUTRO documento ("item 4 do Anexo I – Termo de Referência",
+// "item 4.15 da GN-2350-15", "item 12.2 do Termo de Referência") não é referência interna
+// e não pode ser dada como quebrada. ponytail: só ignora; conferir contra o outro
+// documento selecionado (TR/edital) quando valer a pena.
+const EXTERNA = /^(?:\([a-z0-9]+\))?[ \t,]*(?:d[oa]s?|n[oa]s?)\s+(?:anexo|termo|tr\b|edital|contrato|minuta|etp|estudo|projeto|gn|lei|decreto|resolu|instru|portaria|pol[íi]tica|diretriz|norma|ato\b|regulamento|manual|guia|ata\b|cap[íi]tulo)/i;
 export function verificar_referencias_cruzadas(texto: string) {
   texto = texto || "";
-  const existentes = new Set(marcadores(texto));
-  const citadas = [...texto.matchAll(/(?:item|subitem)\s+(?:n[ºo]\s*)?(\d+(?:\.\d+)*)/gi)].map((m) => m[1]);
+  const existentes = new Set([...marcadores(texto), ...clausulasPorExtenso(texto)]);
+  const citadas = [...texto.matchAll(/(?:item|subitem)\s+(?:n[ºo]\s*)?(\d+(?:\.\d+)*)/gi)]
+    .filter((m) => !EXTERNA.test(texto.slice(m.index! + m[0].length, m.index! + m[0].length + 60)))
+    .map((m) => m[1]);
   return {
     itens_existentes: [...existentes].sort(),
     referencias_citadas: citadas,
@@ -323,27 +341,29 @@ export function verificar_referencias_cruzadas(texto: string) {
 
 // CORRIGIDO: lista interna que reinicia em 1 (ex.: tabela de critérios "1. ... 2. ..."
 // dentro da seção 6) e depois volta à sequência principal (7.) não é numeração quebrada.
+// CORRIGIDO: a sequência é POR ITEM-PAI — "5.2" seguido de "6.1" não é salto, mesmo
+// quando o "6" não aparece como número (minuta com "CLÁUSULA SEXTA").
 // ponytail: só reconhece UM nível de lista interna por vez — suficiente nos TR/ETP vistos.
 export function verificar_numeracao_sequencial(texto: string) {
   const problemas: { item: string; nivel: number; esperado: number; encontrado: number }[] = [];
-  const anteriores = new Map<number, number>();
-  let pausado: { nivel: number; valor: number } | null = null; // sequência principal suspensa
+  const anteriores = new Map<string, number>(); // pai ("" = nível 1) → último número visto
+  let pausado: { pai: string; valor: number } | null = null; // sequência principal suspensa
   for (const item of marcadores(texto || "")) {
     const partes = item.split(".").map(Number);
     const nivel = partes.length;
+    const pai = partes.slice(0, -1).join(".");
     const atual = partes[nivel - 1];
-    if (pausado && nivel === pausado.nivel && atual === pausado.valor + 1) {
-      anteriores.set(nivel, pausado.valor); // lista interna acabou: retoma a principal
+    if (pausado && pai === pausado.pai && atual === pausado.valor + 1) {
+      anteriores.set(pai, pausado.valor); // lista interna acabou: retoma a principal
       pausado = null;
     }
-    const anterior = anteriores.get(nivel);
+    const anterior = anteriores.get(pai);
     if (anterior !== undefined && atual === 1 && anterior > 1 && !pausado) {
-      pausado = { nivel, valor: anterior }; // entrou numa lista interna
+      pausado = { pai, valor: anterior }; // entrou numa lista interna
     } else if (anterior !== undefined && atual !== anterior && atual !== anterior + 1) {
       problemas.push({ item, nivel, esperado: anterior + 1, encontrado: atual });
     }
-    anteriores.set(nivel, atual);
-    for (const n of [...anteriores.keys()]) if (n > nivel) anteriores.delete(n);
+    anteriores.set(pai, atual);
   }
   return problemas;
 }
