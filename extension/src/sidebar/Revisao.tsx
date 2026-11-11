@@ -131,7 +131,8 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
   async function darVeredito(agente: AgenteId, p: Problema, veredito: Veredito["veredito"] | null) {
     const chave = `${processId}|${chaveAchado(agente, p)}`;
     const resto = vereditos.filter((v) => v.chave !== chave);
-    const novos = veredito ? [...resto, { chave, processId, agente, veredito, criticidade: p.criticidade, onde: p.onde, problema: p.problema, trecho: p.trechos[0] ?? "", em: new Date().toISOString() }] : resto;
+    const nota = veredito === "falso_positivo" ? vereditos.find((v) => v.chave === chave)?.nota : undefined; // não perde o motivo escrito na tela de correções
+    const novos = veredito ? [...resto, { chave, processId, agente, veredito, criticidade: p.criticidade, onde: p.onde, problema: p.problema, trecho: p.trechos[0] ?? "", ...(nota ? { nota } : {}), em: new Date().toISOString() }] : resto;
     setVereditos(novos);
     await sset({ vereditos: novos });
   }

@@ -97,6 +97,7 @@ function App() {
 
 function Cartao({ it, v, onMarcar }: { it: Item; v?: Veredito; onMarcar: (it: Item, v: Veredito["veredito"] | null, nota?: string) => void }) {
   const [motivo, setMotivo] = useState(v?.nota ?? "");
+  useEffect(() => { setMotivo(v?.nota ?? ""); }, [v?.nota]); // avaliações salvas chegam depois do 1º render
   const estado = v?.veredito;
   const salvo = (v?.nota ?? "") === motivo.trim();
 
