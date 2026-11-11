@@ -23,13 +23,14 @@ import {
 // ─── Tipos de IA ────────────────────────────────────────────────────────────────
 
 export interface AiConfig {
-  provider: "groq" | "openai" | "custom";
+  provider: "tjpe" | "groq" | "openai" | "custom";
   apiKey: string;
   model: string;
   baseUrl: string;
 }
 
 export const AI_PRESETS: Record<string, Omit<AiConfig, "apiKey" | "provider">> = {
+  tjpe:   { baseUrl: "https://litellm.cloud.tjpe.jus.br/v1", model: "vertex_ai/claude-sonnet-4-6" },
   groq:   { baseUrl: "https://api.groq.com/openai/v1",  model: "llama-3.3-70b-versatile" },
   openai: { baseUrl: "https://api.openai.com/v1",       model: "gpt-4o-mini" },
   custom: { baseUrl: "",                                 model: "" },

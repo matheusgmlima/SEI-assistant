@@ -216,6 +216,7 @@ function buildTramitacao(details: ProcessDetails): UnitPhase[] {
 
 // ─── AI Presets ─────────────────────────────────────────────────────────────────
 const AI_PRESETS: Record<string, { baseUrl: string; model: string; label: string }> = {
+  tjpe:   { baseUrl: "https://litellm.cloud.tjpe.jus.br/v1", model: "vertex_ai/claude-sonnet-4-6", label: "LiteLLM TJPE" },
   groq:   { baseUrl: "https://api.groq.com/openai/v1",  model: "llama-3.3-70b-versatile", label: "Groq (gratuito)" },
   openai: { baseUrl: "https://api.openai.com/v1",       model: "gpt-4o-mini",              label: "OpenAI" },
   custom: { baseUrl: "",                                 model: "",                         label: "Custom" },
@@ -619,10 +620,10 @@ function IdleScreen() {
 // ── Tela: Configurações ─────────────────────────────────────────────────────────
 function SettingsScreen({ onBack }: { onBack: () => void }) {
   const { config, save } = useAiConfig();
-  const [provider, setProvider] = useState<string>(config?.provider ?? "groq");
+  const [provider, setProvider] = useState<string>(config?.provider ?? "tjpe");
   const [apiKey, setApiKey] = useState(config?.apiKey ?? "");
-  const [model, setModel] = useState(config?.model ?? AI_PRESETS.groq.model);
-  const [baseUrl, setBaseUrl] = useState(config?.baseUrl ?? AI_PRESETS.groq.baseUrl);
+  const [model, setModel] = useState(config?.model ?? AI_PRESETS.tjpe.model);
+  const [baseUrl, setBaseUrl] = useState(config?.baseUrl ?? AI_PRESETS.tjpe.baseUrl);
   const [saved, setSaved] = useState(false);
 
   function handleProviderChange(p: string) {
@@ -687,7 +688,7 @@ function SettingsScreen({ onBack }: { onBack: () => void }) {
         </button>
 
         <p className="settings-hint">
-          Groq é gratuito — crie sua chave em <strong>console.groq.com</strong>
+          No TJPE, use “LiteLLM TJPE” com a Virtual Key criada em <strong>litellm.cloud.tjpe.jus.br</strong>
         </p>
       </div>
     </div>
