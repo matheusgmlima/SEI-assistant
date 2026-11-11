@@ -891,6 +891,7 @@ body {
   transition: color var(--t-fast);
 }
 .btn-collect-reset:hover { color: var(--color-text-soft); }
+.btn-collect:disabled, .btn-collect-reset:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
 .collect-done {
   font-size: 11px;
   color: #166534;

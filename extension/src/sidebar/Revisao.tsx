@@ -262,6 +262,7 @@ export function ControladorScreen({ onBack }: { onBack: () => void }) {
   const [dados, setDados] = useState<{ vereditos: Veredito[]; faltas: Falta[]; sinais: SinalAutomatico[]; overrides: Overrides; casos: Set<string> } | null>(null);
   const [proposta, setProposta] = useState<Proposta | null>(null);
   const [ocupado, setOcupado] = useState<string | null>(null);
+  const [aviso, setAviso] = useState<string | null>(null);
   const [erro, setErro] = useState<string | null>(null);
 
   async function carregar() {
@@ -280,7 +281,7 @@ export function ControladorScreen({ onBack }: { onBack: () => void }) {
 
   async function propor(agente: AgenteId) {
     if (!dados) return;
-    setErro(null); setProposta(null); setOcupado(`Controlador analisando ${AGENTES.find((a) => a.id === agente)!.nome}…`);
+    setErro(null); setAviso(null); setProposta(null); setOcupado(`Controlador analisando ${AGENTES.find((a) => a.id === agente)!.nome}…`);
     try {
       const cfg = await configLlm("controlador");
       if (!cfg) throw new Error("Configure a chave da IA.");
@@ -321,6 +322,7 @@ export function ControladorScreen({ onBack }: { onBack: () => void }) {
     const hist = dados.overrides[proposta.agente] ?? [];
     const overrides = { ...dados.overrides, [proposta.agente]: [...hist, { versao: hist.length + 2, texto: proposta.prompt, em: new Date().toISOString(), motivo: proposta.mudancas.slice(0, 500) }] };
     await sset({ promptOverrides: overrides });
+    setAviso(`✓ Versão ${hist.length + 2} do ${AGENTES.find((a) => a.id === proposta.agente)!.nome} aplicada — vale a partir da próxima revisão.`);
     setProposta(null); carregar();
   }
 
@@ -359,8 +361,9 @@ export function ControladorScreen({ onBack }: { onBack: () => void }) {
       </header>
       <div className="ctrl">
         <p className="ctrl-intro">Os vereditos dados nos achados (✓ procede / ✗ falso alarme / faltou apontar) alimentam o controlador. Ele propõe um prompt melhor, testa nos casos já revisados e só aplica com a sua aprovação.</p>
-        {erro && <div className="summary-error summary-error--inline"><p>{erro}</p></div>}
-        {ocupado && <div className="rev-fase"><span className="collect-spinner" />{ocupado}</div>}
+        {aviso && <div className="rev-fase">{aviso}</div>}
+        {!proposta && erro && <div className="summary-error summary-error--inline"><p>{erro}</p></div>}
+        {!proposta && ocupado && <div className="rev-fase"><span className="collect-spinner" />{ocupado}</div>}
 
         {dados && AGENTES.map((a) => {
           const vs = dados.vereditos.filter((v) => v.agente === a.id);
@@ -402,10 +405,14 @@ export function ControladorScreen({ onBack }: { onBack: () => void }) {
                 {proposta.placar.falsosPositivos.persistentes.map((x, i) => <div key={i}>• ainda aponta: {x}</div>)}
               </div>
             )}
+            {/* status junto dos botões: no topo da tela ninguém vê */}
+            {ocupado && <div className="rev-fase"><span className="collect-spinner" />{ocupado}</div>}
+            {erro && <div className="summary-error summary-error--inline"><p>{erro}</p></div>}
+            {!proposta.placar && !ocupado && <p className="rev-dica">1º clique em 🧪 Testar (roda o agente de novo nos processos já avaliados, leva ~1 min). Depois o Aprovar libera.</p>}
             <div className="ctrl-acoes">
               <button className="btn-collect-reset" disabled={!!ocupado} onClick={testar}>🧪 Testar nos casos salvos</button>
               <button className="btn-collect" disabled={!proposta.placar || !!ocupado} onClick={aplicar}
-                title={proposta.placar ? "" : "Teste antes de aplicar"}>✓ Aprovar e aplicar</button>
+                title={proposta.placar ? "" : "Teste antes de aplicar"}>{proposta.placar ? "✓ Aprovar e aplicar" : "✓ Aprovar (teste primeiro)"}</button>
               <button className="btn-collect-reset" onClick={() => setProposta(null)}>Descartar</button>
             </div>
           </div>
