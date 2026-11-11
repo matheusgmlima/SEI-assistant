@@ -10,7 +10,8 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "skipLibCheck": true,
-    "types": ["chrome"],
+    "types": ["chrome", "vite/client"],
+    "allowImportingTsExtensions": true,
     "paths": {
       "@/*": ["./src/*"],
       "@shared/*": ["../shared/src/*"]

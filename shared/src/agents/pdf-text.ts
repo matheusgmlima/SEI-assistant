@@ -7,7 +7,7 @@
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 export async function pdfToText(data: Uint8Array): Promise<{ texto: string; paginas: number }> {
-  const doc = await getDocument({ data, useSystemFonts: true, isEvalSupported: false }).promise;
+  const doc = await getDocument({ data, useSystemFonts: true }).promise;
   const partes: string[] = [];
   for (let p = 1; p <= doc.numPages; p++) {
     const page = await doc.getPage(p);

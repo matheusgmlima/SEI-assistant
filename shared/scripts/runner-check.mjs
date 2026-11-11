@@ -24,3 +24,23 @@ assert.ok(l.texto.startsWith("Validador de Dados"));
 assert.ok(!l.texto.includes("**"));
 assert.equal(l.violacoes.length, 2);
 console.log("runner-check OK");
+
+// ── Controlador: regressão e extração da proposta ──────────────────────────────
+const { avaliarRegressao, extrairProposta, mesmoTrecho } = await import("../src/agents/controlador.ts");
+const V = (veredito, trecho, problema = "x") => ({ chave: "k", processId: "P1", agente: "a1-revisor", veredito, criticidade: "BAIXA", onde: "Item", problema, trecho, em: "" });
+const vereditos = [
+  V("falso_positivo", "Documento original ou cópia de Declaração, atestados, publicações"),
+  V("procede", "submetendo à autoridade competente do Contratante, o que ultrapassar"),
+  V("procede", "(ausente)", "falta a matriz de riscos"),
+];
+const nova = "Revisor — TR\n1 ponto.\n\n1. [BAIXA] Item 11.4\n   Problema: vírgula\n   Trecho: \"submetendo à autoridade competente do Contratante, o que ultrapassar a sua competência\"\n   Correção: remover\n";
+const pl = avaliarRegressao({ P1: nova }, vereditos);
+assert.equal(pl.falsosPositivos.eliminados, 1);                 // FP sumiu
+assert.equal(pl.acertos.mantidos, 1);                           // acerto com trecho mantido
+assert.equal(pl.acertos.perdidos.length, 1);                    // acerto de ausência perdido
+assert.ok(mesmoTrecho("a Contratada deverá executar os serviços", "A CONTRATADA deverá executar os serviços conforme"));
+assert.ok(!mesmoTrecho("prazo de vigência de 12 meses", "valor global estimado"));
+const prop = extrairProposta("DIAGNÓSTICO:\n- padrão A\nMUDANÇAS:\n- regra B\nPROMPT REVISADO:\n<<<\nNome do agente: X\nnovo\n>>>");
+assert.equal(prop.prompt, "Nome do agente: X\nnovo");
+assert.equal(prop.diagnostico, "- padrão A");
+console.log("controlador-check OK");

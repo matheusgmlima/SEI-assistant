@@ -7,6 +7,7 @@
 
 import type { SessionInfo, SeiProcess, ProcessDetails, AndamentoEntry, CollectionQueueState } from "@shared/index";
 import { extractImportantDocs } from "@shared/index";
+import { parseArvore, ehLinkDeLeitura, htmlParaTexto, type DocArvore } from "@shared/agents/sei-docs";
 
 // ─── Guard de contexto ─────────────────────────────────────────────────────────
 // Após reload da extensão, chrome.runtime.id fica undefined — protege todos os calls
@@ -1438,11 +1439,72 @@ function navigateToControleProcessos(): boolean {
   return false;
 }
 
+// ─── Revisão por agentes: listar e ler documentos da árvore ─────────────────────
+// Validado no SEI 5.0.5: buscar (fetch) um link REAL do SEI é seguro e reutilizável;
+// nunca montamos URL. Só seguimos links de leitura (allowlist em ehLinkDeLeitura).
+
+async function listarDocumentosRevisao(): Promise<DocArvore[]> {
+  const arvore = (document.getElementById("ifrArvore") as HTMLIFrameElement | null)?.contentDocument;
+  if (!arvore) throw new Error("Abra um processo no SEI (a árvore de documentos não está visível).");
+  // "Abrir todas as Pastas": buscar o link traz TODOS os documentos sem mexer na tela.
+  const abrirTudo = arvore.querySelector<HTMLAnchorElement>("a[id^='anchorAP']")?.getAttribute("href");
+  const html = abrirTudo
+    ? await textoDaResposta(await fetch(new URL(abrirTudo, location.href), { credentials: "same-origin" }))
+    : arvore.documentElement.outerHTML;
+  return parseArvore(html);
+}
+
+// O SEI responde "charset=ISO-8859-1"; Response.text() sempre decodifica como UTF-8 e
+// estragaria acentos crus (títulos, documentos antigos). Decodifica pelo charset do servidor.
+async function textoDaResposta(r: Response): Promise<string> {
+  const charset = /charset=([\w-]+)/i.exec(r.headers.get("content-type") ?? "")?.[1] ?? "utf-8";
+  const buf = await r.arrayBuffer();
+  try { return new TextDecoder(charset).decode(buf); } catch { return new TextDecoder("utf-8").decode(buf); }
+}
+
+function bytesParaBase64(b: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+async function lerDocumentosRevisao(ids: string[]) {
+  const docs = await listarDocumentosRevisao(); // links sempre frescos da árvore atual
+  const saida: { idInterno: string; titulo: string; tipo: string; texto?: string; pdfBase64?: string; erro?: string }[] = [];
+  for (const id of ids) {
+    const d = docs.find((x) => x.idInterno === id);
+    if (!d || !ehLinkDeLeitura(d.src)) { saida.push({ idInterno: id, titulo: d?.titulo ?? id, tipo: "?", erro: "documento não encontrado na árvore" }); continue; }
+    try {
+      const r = await fetch(new URL(d.src, location.href), { credentials: "same-origin" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      if (/pdf/i.test(r.headers.get("content-type") ?? "")) {
+        saida.push({ idInterno: id, titulo: d.titulo, tipo: d.tipo, pdfBase64: bytesParaBase64(new Uint8Array(await r.arrayBuffer())) });
+      } else {
+        saida.push({ idInterno: id, titulo: d.titulo, tipo: d.tipo, texto: htmlParaTexto(await textoDaResposta(r)) });
+      }
+    } catch (e) {
+      saida.push({ idInterno: id, titulo: d.titulo, tipo: d.tipo, erro: String(e) });
+    }
+  }
+  return saida;
+}
+
 // ─── Listener de mensagens da sidebar ──────────────────────────────────────────
 
 if (isContextValid()) {
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!isContextValid()) { sendResponse({ ok: false }); return; }
+
+    // Revisão: só o frame do topo responde (ele enxerga o iframe da árvore)
+    if (message.type === "REVISAO_LISTAR" || message.type === "REVISAO_LER") {
+      if (!isTopFrame) return;
+      const tarefa = message.type === "REVISAO_LISTAR"
+        ? listarDocumentosRevisao().then((docs) => docs.map(({ src: _s, ...resto }) => resto))
+        : lerDocumentosRevisao((message.payload?.ids ?? []) as string[]);
+      tarefa.then((dados) => sendResponse({ ok: true, dados }))
+        .catch((e) => sendResponse({ ok: false, erro: String(e?.message ?? e) }));
+      return true;
+    }
 
     if (message.type === "COLLECT_PROCESSES") {
       if (isProcessListPage()) {

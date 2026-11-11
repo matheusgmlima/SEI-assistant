@@ -5,10 +5,11 @@ import type {
 } from "@shared/index";
 import { deriveStatus, extractImportantDocs, cleanDocTitle } from "@shared/index";
 import type { AiConfig } from "../background/index";
+import { RevisaoPanel, ControladorScreen } from "./Revisao";
 
 // ─── Tipos de view ──────────────────────────────────────────────────────────────
-type View = "main" | "processes" | "processDetail" | "settings";
-type DetailTab = "resumo" | "tramitacao" | "auditoria" | "perguntar";
+type View = "main" | "processes" | "processDetail" | "settings" | "controlador";
+type DetailTab = "resumo" | "tramitacao" | "auditoria" | "perguntar" | "revisao";
 
 // ─── Tramitação — tipos e lógica ────────────────────────────────────────────────
 
@@ -1423,7 +1424,16 @@ function ProcessDetailScreen({
               className={`detail-tab ${tab === "perguntar" ? "detail-tab--active" : ""}`}
               onClick={() => setTab("perguntar")}
             >Perguntar</button>
+            <button
+              className={`detail-tab ${tab === "revisao" ? "detail-tab--active" : ""}`}
+              onClick={() => setTab("revisao")}
+            >Revisão</button>
           </div>
+
+          {/* Aba: Revisão por agentes */}
+          {tab === "revisao" && (
+            <RevisaoPanel processId={processId} hasApiKey={hasApiKey} onSettings={onSettings} />
+          )}
 
           {/* Aba: Auditoria */}
           {tab === "auditoria" && (
@@ -1967,6 +1977,7 @@ function ActiveScreen({ session }: { session: SessionInfo }) {
   }
 
   if (view === "settings") return <SettingsScreen onBack={() => setView("main")} />;
+  if (view === "controlador") return <ControladorScreen onBack={() => setView("main")} />;
 
   if (view === "processDetail" && selectedProcess) {
     return (
@@ -2020,6 +2031,7 @@ function ActiveScreen({ session }: { session: SessionInfo }) {
       <nav className="actions">
         <p className="actions-label">Ações rápidas</p>
         <ActionItem icon="📋" title="Meus processos" desc="Listar e resumir processos" onClick={() => setView("processes")}/>
+        <ActionItem icon="🧠" title="Controlador dos agentes" desc="Vereditos e melhoria dos prompts" onClick={() => setView("controlador")}/>
         <ActionItem icon="📈" title="Painel da unidade" desc="Métricas e gargalos" onClick={() => chrome.runtime.sendMessage({ type: "OPEN_DASHBOARD" })}/>
       </nav>
 

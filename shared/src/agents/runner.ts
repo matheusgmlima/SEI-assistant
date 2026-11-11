@@ -196,7 +196,10 @@ export function verificarTrechos(saida: string, docs: Documento[]): VerificacaoT
     total++;
     const alvo = (m[1] && [...porDoc].find(([k]) => k.includes(norm(m[1])) || norm(m[1]).includes(k))?.[1]) || corpus;
     // Trecho com reticências: cada pedaço (≥ 3 palavras) precisa existir.
-    const pedacos = m[2].split(/\.{3}|…/).map(norm).filter((p) => p.split(" ").length >= 3 || p.length >= 12);
+    // Pedaços curtos demais entre reticências são ignorados; trecho curto SEM reticências
+    // (telefone, CEP, nº de processo) é conferido inteiro.
+    const partes = m[2].split(/\.{3}|…/).map(norm).filter(Boolean);
+    const pedacos = partes.length === 1 ? partes : partes.filter((p) => p.split(" ").length >= 3 || p.length >= 12);
     if (!pedacos.length || !pedacos.every((p) => alvo.includes(p))) naoEncontrados.push(m[2]);
   }
   return { total, verificados: total - naoEncontrados.length, naoEncontrados };

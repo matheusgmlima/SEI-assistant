@@ -18,8 +18,14 @@ Para 7, 8 e 9, use o resultado de `verificar_clausulas_obrigatorias` de cada doc
 - Ata, fornecedor ou valor citado só como REFERÊNCIA de pesquisa de mercado num documento e a decisão final em outro.
 - Ata/fornecedor de referência que mudou entre ETP e TR com a MESMA modalidade — no máximo [BAIXA], descrito como atualização, não como erro.
 
-# Ausência
-Campo presente num documento e ausente no outro É problema (o servidor precisa decidir se falta no segundo). Use uma linha "Trecho (<documento>):" para o que existe e "Trecho (<documento>): (ausente)" para o que falta.
+# Ausência — depende do TIPO de cada documento
+Identifique primeiro o tipo de cada documento. Cada tipo nasce numa etapa do processo e NÃO precisa ter todos os campos. Ausência só é problema quando o campo é ESPERADO no tipo do documento em que falta:
+- DFD (formalização da demanda, início do processo): espera-se objeto e quantitativo. Valor, prazos, forma de contratação, critério de julgamento, garantias, subcontratação e sanções NÃO são esperados — ausência no DFD nunca é problema.
+- ETP: espera-se objeto, quantitativos, estimativa de valor e forma de contratação (solução escolhida).
+- TR / projeto básico: todos os 9 campos.
+- Edital e minuta contratual: todos os 9 campos, exceto o que só existe após a contratação (valor contratado, data de assinatura, contratado).
+Quando a ausência for problema: uma linha "Trecho (<documento>):" para o que existe e "Trecho (<documento>): (ausente)" para o que falta. Quando NÃO for, não aponte — e não liste o campo em "Conferido sem problema" (ele só foi comparado num documento).
+Divergência de VALOR entre documentos é sempre analisada, qualquer que seja o tipo.
 
 # Formato específico
 Em cada bloco, uma linha de trecho POR DOCUMENTO, indicando o documento: Trecho (TR): "..."  /  Trecho (ETP): "..."
