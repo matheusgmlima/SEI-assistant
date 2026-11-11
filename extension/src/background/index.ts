@@ -20,21 +20,10 @@ import {
   needsSync,
 } from "../db/index";
 
-// ─── Tipos de IA ────────────────────────────────────────────────────────────────
+// ─── IA: LiteLLM do TJPE (regras por modelo em shared/agents/llm.ts) ─────────
 
-export interface AiConfig {
-  provider: "tjpe" | "groq" | "openai" | "custom";
-  apiKey: string;
-  model: string;
-  baseUrl: string;
-}
-
-export const AI_PRESETS: Record<string, Omit<AiConfig, "apiKey" | "provider">> = {
-  tjpe:   { baseUrl: "https://litellm.cloud.tjpe.jus.br/v1", model: "vertex_ai/claude-sonnet-4-6" },
-  groq:   { baseUrl: "https://api.groq.com/openai/v1",  model: "llama-3.3-70b-versatile" },
-  openai: { baseUrl: "https://api.openai.com/v1",       model: "gpt-4o-mini" },
-  custom: { baseUrl: "",                                 model: "" },
-};
+import { chatCompletion, normalizarConfig, type AiConfig } from "@shared/agents/llm";
+export type { AiConfig };
 
 // ─── Sessão ────────────────────────────────────────────────────────────────────
 
@@ -205,48 +194,26 @@ interface ChatMessage { role: "system" | "user" | "assistant"; content: string; 
 async function callAiRaw(
   config: AiConfig,
   messages: ChatMessage[],
-  opts: { maxTokens?: number; temperature?: number } = {}
+  opts: { maxTokens?: number; temperature?: number; tag: string }
 ): Promise<string> {
-  const res = await fetch(`${config.baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${config.apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: config.model,
-      messages,
-      max_tokens: opts.maxTokens ?? 2600,
-      temperature: opts.temperature ?? 0.15,
-    }),
+  const data = await chatCompletion(config, messages, {
+    maxTokens: opts.maxTokens ?? 2600, temperature: opts.temperature ?? 0.15, tag: opts.tag,
   });
-
-  if (!res.ok) {
-    const err = await res.text().catch(() => res.statusText);
-    throw new Error(`Erro na API (${res.status}): ${err}`);
-  }
-
-  const data = await res.json();
   const content = data.choices?.[0]?.message?.content;
-  if (!content) throw new Error("Resposta vazia da IA.");
+  if (typeof content !== "string" || !content) throw new Error("Resposta vazia da IA.");
   return content;
 }
 
 async function callAi(
   config: AiConfig,
   prompt: string,
-  opts: { system?: string; maxTokens?: number; temperature?: number } = {}
+  opts: { system?: string; maxTokens?: number; temperature?: number; tag: string }
 ): Promise<string> {
   return callAiRaw(config, [
     { role: "system", content: opts.system ?? SYSTEM_ANALISTA },
     { role: "user", content: prompt },
-  ], { maxTokens: opts.maxTokens, temperature: opts.temperature });
+  ], opts);
 }
-
-// NOTA: o fetch direto via background (com cookies de sessão) foi removido —
-// reusar `infra_hash` causa logout por invalidação CSRF do SEI. Toda extração
-// de conteúdo de documento agora é feita pelo content script via clique no DOM,
-// que reaproveita a sessão sem violar o token.
 
 // ─── Auditoria de conformidade ────────────────────────────────────────────────
 
@@ -388,6 +355,7 @@ async function runAudit(config: AiConfig | undefined, details: ProcessDetails): 
       const raw = await callAi(config, buildAuditPrompt(details, checklist, regras), {
         system: SYSTEM_AUDITOR,
         maxTokens: 2200,
+        tag: "auditoria",
         temperature: 0.1,
       });
       const parsed = parseAuditJson(raw);
@@ -490,7 +458,7 @@ async function answerQuestion(
     ...history.slice(-6),
     { role: "user", content: question },
   ];
-  return callAiRaw(config, messages, { maxTokens: 1000, temperature: 0.15 });
+  return callAiRaw(config, messages, { maxTokens: 1000, temperature: 0.15, tag: "perguntas" });
 }
 
 // ─── Sync para IndexedDB ───────────────────────────────────────────────────────
@@ -579,7 +547,7 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, _sender, sendResponse
       const storageKey = `proc_${processId}`;
 
       chrome.storage.local.get(["aiConfig", storageKey], async (result) => {
-        const config = result.aiConfig as AiConfig | undefined;
+        const config = normalizarConfig(result.aiConfig) ?? undefined;
         let details = result[storageKey] as ProcessDetails | undefined;
 
         if (!config?.apiKey) {
@@ -596,7 +564,7 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, _sender, sendResponse
         // O conteúdo dos despachos é extraído pelo content script quando o usuário abre o doc.
 
         try {
-          const summary = await callAi(config, buildPrompt(details));
+          const summary = await callAi(config, buildPrompt(details), { tag: "resumo" });
           const updated: ProcessDetails = { ...details, summary };
           await chrome.storage.local.set({ [storageKey]: updated });
 
@@ -661,7 +629,7 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, _sender, sendResponse
       const storageKey = `proc_${processId}`;
 
       chrome.storage.local.get(["aiConfig", storageKey], async (result) => {
-        const config = result.aiConfig as AiConfig | undefined;
+        const config = normalizarConfig(result.aiConfig) ?? undefined;
         const details = result[storageKey] as ProcessDetails | undefined;
 
         if (!config?.apiKey || !details) {
@@ -697,7 +665,7 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, _sender, sendResponse
 
           const detailsWithFullAndamento: ProcessDetails = { ...details, andamento: fullAndamento };
 
-          const summary = await callAi(config, buildPrompt(detailsWithFullAndamento));
+          const summary = await callAi(config, buildPrompt(detailsWithFullAndamento), { tag: "resumo" });
 
           // Roda auditoria de conformidade na sequência (dados já estão completos)
           const audit = await runAudit(config, detailsWithFullAndamento).catch((e) => {
@@ -735,7 +703,7 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, _sender, sendResponse
       const storageKey = `proc_${processId}`;
 
       chrome.storage.local.get(["aiConfig", storageKey], async (result) => {
-        const config = result.aiConfig as AiConfig | undefined;
+        const config = normalizarConfig(result.aiConfig) ?? undefined;
         const details = result[storageKey] as ProcessDetails | undefined;
 
         if (!details) {
@@ -773,7 +741,7 @@ chrome.runtime.onMessage.addListener((message: ExtMessage, _sender, sendResponse
       const storageKey = `proc_${processId}`;
 
       chrome.storage.local.get(["aiConfig", storageKey], async (result) => {
-        const config = result.aiConfig as AiConfig | undefined;
+        const config = normalizarConfig(result.aiConfig) ?? undefined;
         const details = result[storageKey] as ProcessDetails | undefined;
 
         if (!config?.apiKey) {

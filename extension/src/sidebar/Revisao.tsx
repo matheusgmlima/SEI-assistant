@@ -12,7 +12,7 @@ import { rodarAgente, agentesAplicaveis, AGENTES, type AgenteId, type Documento,
 import { parseSaida, chaveAchado, type Problema } from "@shared/agents/saida";
 import { montarPedidoMelhoria, extrairProposta, avaliarRegressao, type Veredito, type Falta, type SinalAutomatico, type PlacarRegressao } from "@shared/agents/controlador";
 import { ehDocumentoPrincipal, type TipoDoc } from "@shared/agents/sei-docs";
-import type { AiConfig } from "../background/index";
+import { chatCompletion, normalizarConfig, MODELO_PADRAO, MODELO_CONTROLADOR } from "@shared/agents/llm";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -38,13 +38,10 @@ const sset = (o: Record<string, unknown>) => new Promise<void>((r) => chrome.sto
 interface RevisaoSalva { em: string; modelo: string; documentos: { nome: string; caracteres: number }[]; resultados: ResultadoAgente[] }
 
 async function configLlm(papel: "agentes" | "controlador"): Promise<LlmConfig | null> {
-  const c = await sget<AiConfig | undefined>("aiConfig");
-  if (!c?.apiKey) return null;
-  const tjpe = c.provider === "tjpe" || /litellm\.cloud\.tjpe\.jus\.br/.test(c.baseUrl ?? "");
-  const model = tjpe
-    ? (papel === "agentes" ? "gemini-3.1-pro-preview" : "vertex_ai/claude-opus-4-8") // escolha validada no TR real
-    : c.model;
-  return { baseUrl: c.baseUrl, apiKey: c.apiKey, model };
+  const c = normalizarConfig(await sget<unknown>("aiConfig"));
+  if (!c) return null;
+  // escolha validada no TR real: Gemini nos agentes, Opus no controlador
+  return { baseUrl: c.baseUrl, apiKey: c.apiKey, model: papel === "agentes" ? MODELO_PADRAO : MODELO_CONTROLADOR };
 }
 
 function enviarAbaAtiva<T>(msg: unknown): Promise<T> {
@@ -280,11 +277,7 @@ export function ControladorScreen({ onBack }: { onBack: () => void }) {
       const atual = promptsAtivos(dados.overrides).agentes[agente];
       const msgs = montarPedidoMelhoria(AGENTES.find((a) => a.id === agente)!.nome, atual,
         dados.vereditos.filter((v) => v.agente === agente), dados.faltas.filter((f) => f.agente === agente), dados.sinais.filter((s) => s.agente === agente));
-      const body: Record<string, unknown> = { model: cfg.model, messages: msgs, metadata: { tags: ["controlador"] } };
-      if (!/opus/.test(cfg.model)) body.temperature = 0;
-      const r = await fetch(`${cfg.baseUrl.replace(/\/$/, "")}/chat/completions`, { method: "POST", headers: { Authorization: `Bearer ${cfg.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      const j = await r.json();
-      if (!r.ok) throw new Error(`LiteLLM ${r.status}: ${JSON.stringify(j).slice(0, 200)}`);
+      const j = await chatCompletion(cfg, msgs, { temperature: 0, tag: "controlador" });
       const p = extrairProposta(String(j.choices?.[0]?.message?.content ?? ""));
       if (!p.prompt) throw new Error("O controlador não devolveu um prompt revisado.");
       setProposta({ agente, diagnostico: p.diagnostico, mudancas: p.mudancas, prompt: p.prompt });

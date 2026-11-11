@@ -4,7 +4,7 @@ import type {
   AuditResult, AuditFinding, AuditSeverity, ProcessStatusInfo, CollectionQueueState,
 } from "@shared/index";
 import { deriveStatus, extractImportantDocs, cleanDocTitle } from "@shared/index";
-import type { AiConfig } from "../background/index";
+import { MODELOS, MODELO_PADRAO, LITELLM_URL, normalizarConfig, configLegada, type AiConfig } from "@shared/agents/llm";
 import { RevisaoPanel, ControladorScreen } from "./Revisao";
 
 // ─── Tipos de view ──────────────────────────────────────────────────────────────
@@ -214,14 +214,6 @@ function buildTramitacao(details: ProcessDetails): UnitPhase[] {
   if (result.length > 0) result[result.length - 1].isCurrent = true;
   return result;
 }
-
-// ─── AI Presets ─────────────────────────────────────────────────────────────────
-const AI_PRESETS: Record<string, { baseUrl: string; model: string; label: string }> = {
-  tjpe:   { baseUrl: "https://litellm.cloud.tjpe.jus.br/v1", model: "vertex_ai/claude-sonnet-4-6", label: "LiteLLM TJPE" },
-  groq:   { baseUrl: "https://api.groq.com/openai/v1",  model: "llama-3.3-70b-versatile", label: "Groq (gratuito)" },
-  openai: { baseUrl: "https://api.openai.com/v1",       model: "gpt-4o-mini",              label: "OpenAI" },
-  custom: { baseUrl: "",                                 model: "",                         label: "Custom" },
-};
 
 // ─── Hook: sessão ───────────────────────────────────────────────────────────────
 const DEFAULT_SESSION: SessionInfo = { status: "idle", username: null, unit: null, detectedAt: null };
@@ -587,9 +579,10 @@ function useQa(processId: string | null) {
 // ─── Hook: config de IA ─────────────────────────────────────────────────────────
 function useAiConfig() {
   const [config, setConfig] = useState<AiConfig | null>(null);
+  const [legada, setLegada] = useState(false);
 
   useEffect(() => {
-    chrome.storage.local.get("aiConfig", (r) => { if (r.aiConfig) setConfig(r.aiConfig); });
+    chrome.storage.local.get("aiConfig", (r) => { setConfig(normalizarConfig(r.aiConfig)); setLegada(configLegada(r.aiConfig)); });
   }, []);
 
   function save(cfg: AiConfig) {
@@ -597,7 +590,7 @@ function useAiConfig() {
     setConfig(cfg);
   }
 
-  return { config, save };
+  return { config, legada, save };
 }
 
 // ─── Componentes ────────────────────────────────────────────────────────────────
@@ -620,23 +613,16 @@ function IdleScreen() {
 
 // ── Tela: Configurações ─────────────────────────────────────────────────────────
 function SettingsScreen({ onBack }: { onBack: () => void }) {
-  const { config, save } = useAiConfig();
-  const [provider, setProvider] = useState<string>(config?.provider ?? "tjpe");
-  const [apiKey, setApiKey] = useState(config?.apiKey ?? "");
-  const [model, setModel] = useState(config?.model ?? AI_PRESETS.tjpe.model);
-  const [baseUrl, setBaseUrl] = useState(config?.baseUrl ?? AI_PRESETS.tjpe.baseUrl);
+  const { config, legada, save } = useAiConfig();
+  const [apiKey, setApiKey] = useState("");
+  const [model, setModel] = useState(MODELO_PADRAO);
   const [saved, setSaved] = useState(false);
 
-  function handleProviderChange(p: string) {
-    setProvider(p);
-    if (p !== "custom") {
-      setModel(AI_PRESETS[p].model);
-      setBaseUrl(AI_PRESETS[p].baseUrl);
-    }
-  }
+  // config chega assíncrona do storage
+  useEffect(() => { if (config) { setApiKey(config.apiKey); setModel(config.model); } }, [config]);
 
   function handleSave() {
-    save({ provider: provider as AiConfig["provider"], apiKey, model, baseUrl });
+    save({ provider: "tjpe", apiKey: apiKey.trim(), model, baseUrl: LITELLM_URL });
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }
@@ -649,14 +635,10 @@ function SettingsScreen({ onBack }: { onBack: () => void }) {
       </header>
 
       <div className="settings-body">
-        <label className="settings-label">Provider</label>
-        <select className="settings-select" value={provider} onChange={(e) => handleProviderChange(e.target.value)}>
-          {Object.entries(AI_PRESETS).map(([k, v]) => (
-            <option key={k} value={k}>{v.label}</option>
-          ))}
-        </select>
-
-        <label className="settings-label">API Key</label>
+        {legada && (
+          <p className="settings-hint">⚠ A chave salva era de outro provedor (Groq/OpenAI). Cole a chave do LiteLLM do TJPE.</p>
+        )}
+        <label className="settings-label">Chave do LiteLLM TJPE</label>
         <input
           className="settings-input"
           type="password"
@@ -665,31 +647,17 @@ function SettingsScreen({ onBack }: { onBack: () => void }) {
           onChange={(e) => setApiKey(e.target.value)}
         />
 
-        <label className="settings-label">Modelo</label>
-        <input
-          className="settings-input"
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-        />
+        <label className="settings-label">Modelo (resumo, auditoria e perguntas)</label>
+        <select className="settings-select" value={model} onChange={(e) => setModel(e.target.value)}>
+          {MODELOS.map((m) => <option key={m.id} value={m.id}>{m.nome}</option>)}
+        </select>
 
-        {provider === "custom" && (
-          <>
-            <label className="settings-label">Base URL</label>
-            <input
-              className="settings-input"
-              placeholder="https://..."
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-            />
-          </>
-        )}
-
-        <button className="btn-save" onClick={handleSave} disabled={!apiKey}>
+        <button className="btn-save" onClick={handleSave} disabled={!apiKey.trim()}>
           {saved ? "✓ Salvo!" : "Salvar"}
         </button>
 
         <p className="settings-hint">
-          No TJPE, use “LiteLLM TJPE” com a Virtual Key criada em <strong>litellm.cloud.tjpe.jus.br</strong>
+          Chave criada em <strong>litellm.cloud.tjpe.jus.br</strong>. Os agentes de revisão usam sempre Gemini 3.1 Pro e o controlador, Claude Opus.
         </p>
       </div>
     </div>

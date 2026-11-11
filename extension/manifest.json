@@ -19,10 +19,7 @@
   ],
   "host_permissions": [
     "https://sei.cloud.tjpe.jus.br/*",
-    "https://litellm.cloud.tjpe.jus.br/*",
-    "https://api.groq.com/*",
-    "https://api.openai.com/*",
-    "https://api.anthropic.com/*"
+    "https://litellm.cloud.tjpe.jus.br/*"
   ],
   "background": {
     "service_worker": "dist/background/index.js",

@@ -7,6 +7,7 @@
  * (Vite ?raw na extensão, fs nos scripts).
  */
 import * as T from "./tools.ts";
+import { chatCompletion } from "./llm.ts";
 const { semSumario } = T;
 
 export type AgenteId = "a1-revisor" | "a2-consistencia" | "a3-conformidade" | "a4-estrutura" | "a5-dados" | "a6-inconsistencias";
@@ -94,17 +95,8 @@ export function montarMensagens(agente: Agente, prompts: Prompts, docs: Document
 type Msg = { role: string; content: unknown; tool_calls?: { id: string; function: { name: string; arguments: string } }[]; tool_call_id?: string };
 
 async function chamar(cfg: LlmConfig, messages: Msg[], tools: unknown[], tag: string) {
-  const body: Record<string, unknown> = { model: cfg.model, messages, metadata: { tags: [tag] } };
-  if (tools.length) body.tools = tools;
-  if (!/opus/.test(cfg.model)) body.temperature = 0; // Opus 4.8 rejeita temperature
-  const r = await fetch(`${cfg.baseUrl.replace(/\/$/, "")}/chat/completions`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${cfg.apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const json = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(`LiteLLM ${r.status}: ${JSON.stringify(json).slice(0, 300)}`);
-  return json as { choices: { message: Msg }[]; usage?: { prompt_tokens: number; completion_tokens: number } };
+  const r = await chatCompletion(cfg, messages, { temperature: 0, tools, tag });
+  return r as unknown as { choices: { message: Msg }[]; usage?: { prompt_tokens: number; completion_tokens: number } };
 }
 
 export interface ResultadoAgente {
