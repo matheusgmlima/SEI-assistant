@@ -112,6 +112,7 @@ export interface ResultadoAgente {
   tokens: { entrada: number; saida: number };
   chamadasFerramenta: string[];
   verificacao: VerificacaoTrechos;
+  erro?: string; // falha de chamada — a tela NUNCA pode mostrar isso como "ok"
   violacoes: string[]; // desvios de formato corrigidos/detectados por código
 }
 

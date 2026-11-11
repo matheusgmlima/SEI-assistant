@@ -40,7 +40,8 @@ interface RevisaoSalva { em: string; modelo: string; documentos: { nome: string;
 async function configLlm(papel: "agentes" | "controlador"): Promise<LlmConfig | null> {
   const c = await sget<AiConfig | undefined>("aiConfig");
   if (!c?.apiKey) return null;
-  const model = c.provider === "tjpe"
+  const tjpe = c.provider === "tjpe" || /litellm\.cloud\.tjpe\.jus\.br/.test(c.baseUrl ?? "");
+  const model = tjpe
     ? (papel === "agentes" ? "gemini-3.1-pro-preview" : "vertex_ai/claude-opus-4-8") // escolha validada no TR real
     : c.model;
   return { baseUrl: c.baseUrl, apiKey: c.apiKey, model };
@@ -111,7 +112,10 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
       const prompts = promptsAtivos((await sget<Overrides | undefined>("promptOverrides")) ?? {});
       const res = await Promise.all(ids.map((id) => rodarAgente(id, documentos, cfg, prompts)
         .then((r) => { setStatus((s) => ({ ...s, [id]: "ok" })); return r; })
-        .catch((e) => { setStatus((s) => ({ ...s, [id]: "erro" })); return { agente: id, nome: AGENTES.find((a) => a.id === id)!.nome, texto: `Erro: ${e}`, ms: 0, tokens: { entrada: 0, saida: 0 }, chamadasFerramenta: [], verificacao: { total: 0, verificados: 0, naoEncontrados: [] }, violacoes: [] } as ResultadoAgente; })));
+        .catch((e) => { setStatus((s) => ({ ...s, [id]: "erro" })); return { agente: id, nome: AGENTES.find((a) => a.id === id)!.nome, texto: "", erro: String((e as Error)?.message ?? e), ms: 0, tokens: { entrada: 0, saida: 0 }, chamadasFerramenta: [], verificacao: { total: 0, verificados: 0, naoEncontrados: [] }, violacoes: [] } as ResultadoAgente; })));
+      const falhas = res.filter((r) => r.erro);
+      if (falhas.length === res.length) throw new Error(`Nenhum agente rodou. ${falhas[0].erro} — confira em ⚙ se o provider é "LiteLLM TJPE" e a chave está correta (modelo usado: ${cfg.model}).`);
+      if (falhas.length) setErro(`${falhas.length} agente(s) falharam: ${falhas[0].erro}`);
       const nova: RevisaoSalva = { em: new Date().toISOString(), modelo: cfg.model, documentos: documentos.map((d) => ({ nome: d.nome, caracteres: d.texto.length })), resultados: res };
       await sset({ [`revisao_${processId}`]: nova });
       setSalva(nova);
@@ -186,7 +190,9 @@ function CartaoAgente({ r, processId, vereditos, onVeredito, onFalta }: {
   onVeredito: (a: AgenteId, p: Problema, v: Veredito["veredito"] | null) => void; onFalta: (a: AgenteId, t: string) => void;
 }) {
   const s = useMemo(() => parseSaida(r.texto), [r.texto]);
-  const [aberto, setAberto] = useState(s.problemas.length > 0);
+  // revisões antigas guardavam a falha no texto ("Erro: ...")
+  const falha = r.erro ?? (r.texto.startsWith("Erro:") ? r.texto.slice(5).trim() : undefined);
+  const [aberto, setAberto] = useState(s.problemas.length > 0 || !!falha);
   const [falta, setFalta] = useState("");
   const [faltaOk, setFaltaOk] = useState(false);
   const naoAchados = new Set(r.verificacao.naoEncontrados);
@@ -201,11 +207,13 @@ function CartaoAgente({ r, processId, vereditos, onVeredito, onFalta }: {
           {n.ALTA > 0 && <span className="rev-badge rev-badge--alta">{n.ALTA} alta</span>}
           {n.MÉDIA > 0 && <span className="rev-badge rev-badge--media">{n.MÉDIA} média</span>}
           {n.BAIXA > 0 && <span className="rev-badge rev-badge--baixa">{n.BAIXA} baixa</span>}
-          {s.problemas.length === 0 && <span className="rev-badge rev-badge--ok">✓ ok</span>}
+          {falha && <span className="rev-badge rev-badge--alta">✗ falhou</span>}
+          {!falha && s.problemas.length === 0 && <span className="rev-badge rev-badge--ok">✓ ok</span>}
         </span>
       </button>
       {aberto && (
         <div className="rev-agente-corpo">
+          {falha && <div className="summary-error summary-error--inline"><p>Este agente não rodou: {falha}</p></div>}
           <p className="rev-resumo">{s.resumo}</p>
           {s.problemas.map((p) => {
             const meu = vereditos.find((v) => v.chave === `${processId}|${chaveAchado(r.agente, p)}`)?.veredito;
