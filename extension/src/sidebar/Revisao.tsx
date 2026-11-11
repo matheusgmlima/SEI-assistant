@@ -8,11 +8,11 @@ import { useEffect, useMemo, useState } from "react";
 import { GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mjs";
 import workerUrl from "pdfjs-dist/legacy/build/pdf.worker.mjs?url";
 import { pdfToText } from "@shared/agents/pdf-text";
-import { rodarAgente, agentesAplicaveis, AGENTES, type AgenteId, type Documento, type Prompts, type ResultadoAgente, type LlmConfig } from "@shared/agents/runner";
+import { rodarAgente, agentesAplicaveis, montarMensagens, AGENTES, type AgenteId, type Documento, type Prompts, type ResultadoAgente, type LlmConfig } from "@shared/agents/runner";
 import { parseSaida, chaveAchado, type Problema } from "@shared/agents/saida";
 import { montarPedidoMelhoria, extrairProposta, avaliarRegressao, type Veredito, type Falta, type SinalAutomatico, type PlacarRegressao } from "@shared/agents/controlador";
 import { ehDocumentoPrincipal, type TipoDoc } from "@shared/agents/sei-docs";
-import { chatCompletion, normalizarConfig, MODELO_PADRAO, MODELO_CONTROLADOR } from "@shared/agents/llm";
+import { chatCompletion, normalizarConfig, MODELO_AGENTES, MODELO_RAPIDO, MODELO_CONTROLADOR } from "@shared/agents/llm";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -35,13 +35,39 @@ const promptsAtivos = (ov: Overrides): Prompts => ({
 // ── Storage ─────────────────────────────────────────────────────────────────────
 const sget = <T,>(k: string | null): Promise<T> => new Promise((r) => chrome.storage.local.get(k, (v) => r((k ? v[k] : v) as T)));
 const sset = (o: Record<string, unknown>) => new Promise<void>((r) => chrome.storage.local.set(o, () => r()));
-interface RevisaoSalva { em: string; modelo: string; documentos: { nome: string; caracteres: number }[]; resultados: ResultadoAgente[] }
+interface RevisaoSalva { em: string; modelo: string; reaproveitados?: number; documentos: { nome: string; caracteres: number }[]; resultados: ResultadoAgente[] }
 
 async function configLlm(papel: "agentes" | "controlador"): Promise<LlmConfig | null> {
   const c = normalizarConfig(await sget<unknown>("aiConfig"));
   if (!c) return null;
   // escolha validada no TR real: Gemini nos agentes, Opus no controlador
-  return { baseUrl: c.baseUrl, apiKey: c.apiKey, model: papel === "agentes" ? MODELO_PADRAO : MODELO_CONTROLADOR };
+  return papel === "agentes"
+    ? { baseUrl: c.baseUrl, apiKey: c.apiKey, model: MODELO_AGENTES, modelRapido: MODELO_RAPIDO }
+    : { baseUrl: c.baseUrl, apiKey: c.apiKey, model: MODELO_CONTROLADOR };
+}
+
+// ── Cache de resultados: mesma entrada (documento + prompt + ferramentas + modelo) = mesma
+// revisão — não paga de novo. Prompt aprovado pelo controlador ou documento editado muda a chave.
+const CACHE_MAX = 80;
+let filaCache = Promise.resolve(); // 6 agentes gravando ao mesmo tempo: serializa para não perder entrada
+async function sha256(t: string) {
+  const h = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(t));
+  return [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+async function rodarComCache(id: AgenteId, docs: Documento[], cfg: LlmConfig, prompts: Prompts): Promise<ResultadoAgente & { doCache?: boolean }> {
+  const ag = AGENTES.find((a) => a.id === id)!;
+  const chave = await sha256(JSON.stringify([id, cfg.model, cfg.modelRapido, montarMensagens(ag, prompts, docs)]));
+  const salvo = ((await sget<Record<string, ResultadoAgente> | undefined>("cacheAgentes")) ?? {})[chave];
+  if (salvo && !salvo.erro) return { ...salvo, doCache: true };
+  const r = await rodarAgente(id, docs, cfg, prompts);
+  if (!r.erro) filaCache = filaCache.then(async () => {
+    const c = (await sget<Record<string, ResultadoAgente> | undefined>("cacheAgentes")) ?? {};
+    c[chave] = r;
+    const chaves = Object.keys(c);
+    for (const k of chaves.slice(0, Math.max(0, chaves.length - CACHE_MAX))) delete c[k]; // mais antigas primeiro
+    await sset({ cacheAgentes: c });
+  });
+  return r;
 }
 
 const abrirCorrecoes = (proc: string) =>
@@ -114,13 +140,14 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
       setFase(`Rodando ${ids.length} agentes em ${documentos.length} documento(s)…`);
       setStatus(Object.fromEntries(ids.map((i) => [i, "rodando"])));
       const prompts = promptsAtivos((await sget<Overrides | undefined>("promptOverrides")) ?? {});
-      const res = await Promise.all(ids.map((id) => rodarAgente(id, documentos, cfg, prompts)
+      const res = await Promise.all(ids.map((id) => rodarComCache(id, documentos, cfg, prompts)
         .then((r) => { setStatus((s) => ({ ...s, [id]: "ok" })); return r; })
         .catch((e) => { setStatus((s) => ({ ...s, [id]: "erro" })); return { agente: id, nome: AGENTES.find((a) => a.id === id)!.nome, texto: "", erro: String((e as Error)?.message ?? e), ms: 0, tokens: { entrada: 0, saida: 0 }, chamadasFerramenta: [], verificacao: { total: 0, verificados: 0, naoEncontrados: [] }, violacoes: [] } as ResultadoAgente; })));
       const falhas = res.filter((r) => r.erro);
       if (falhas.length === res.length) throw new Error(`Nenhum agente rodou. ${falhas[0].erro} — confira em ⚙ se o provider é "LiteLLM TJPE" e a chave está correta (modelo usado: ${cfg.model}).`);
       if (falhas.length) setErro(`${falhas.length} agente(s) falharam: ${falhas[0].erro}`);
-      const nova: RevisaoSalva = { em: new Date().toISOString(), modelo: cfg.model, documentos: documentos.map((d) => ({ nome: d.nome, caracteres: d.texto.length })), resultados: res };
+      const reaproveitados = res.filter((r) => (r as { doCache?: boolean }).doCache).length;
+      const nova: RevisaoSalva = { em: new Date().toISOString(), modelo: cfg.model, reaproveitados, documentos: documentos.map((d) => ({ nome: d.nome, caracteres: d.texto.length })), resultados: res };
       await sset({ [`revisao_${processId}`]: nova });
       setSalva(nova);
       abrirCorrecoes(processId);
@@ -147,7 +174,7 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
   );
 
   const ocupado = !!fase;
-  const tokens = salva?.resultados.reduce((a, r) => a + r.tokens.entrada + r.tokens.saida, 0) ?? 0;
+  const tokens = salva?.resultados.filter((r) => !(r as { doCache?: boolean }).doCache).reduce((a, r) => a + r.tokens.entrada + r.tokens.saida, 0) ?? 0; // só o que foi pago nesta rodada
 
   return (
     <div className="rev">
@@ -182,7 +209,7 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
       {salva && !fase && (
         <div className="rev-resultados">
           <p className="processes-meta">
-            Revisado em {new Date(salva.em).toLocaleString("pt-BR")} · {salva.documentos.length} doc(s) · {salva.modelo} · {Math.round(tokens / 1000)} mil tokens
+            Revisado em {new Date(salva.em).toLocaleString("pt-BR")} · {salva.documentos.length} doc(s) · {Math.round(tokens / 1000)} mil tokens{salva.reaproveitados ? ` · ${salva.reaproveitados} agente(s) reaproveitado(s) sem custo` : ""}
           </p>
           <button className="btn-collect" onClick={() => abrirCorrecoes(processId)}>📋 Abrir tela de correções</button>
           {salva.resultados.map((r) => <CartaoAgente key={r.agente} r={r} processId={processId} vereditos={vereditos} onVeredito={darVeredito} onFalta={registrarFalta} />)}

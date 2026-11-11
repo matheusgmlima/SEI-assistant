@@ -657,7 +657,7 @@ function SettingsScreen({ onBack }: { onBack: () => void }) {
         </button>
 
         <p className="settings-hint">
-          Chave criada em <strong>litellm.cloud.tjpe.jus.br</strong>. Os agentes de revisão usam sempre Gemini 3.1 Pro e o controlador, Claude Opus.
+          Chave criada em <strong>litellm.cloud.tjpe.jus.br</strong>. Os agentes de revisão escolhem o modelo sozinhos (Pro só no revisor de português e no comparador; Flash nos demais) e o controlador usa Claude Opus.
         </p>
       </div>
     </div>

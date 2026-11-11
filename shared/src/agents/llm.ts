@@ -9,12 +9,17 @@
 export const LITELLM_URL = "https://litellm.cloud.tjpe.jus.br/v1";
 
 export const MODELOS = [
-  { id: "gemini-3.1-pro-preview", nome: "Gemini 3.1 Pro (recomendado)" },
+  { id: "gemini-2.5-flash-br", nome: "Gemini 2.5 Flash (recomendado, ~5x mais barato)" },
+  { id: "gemini-3.1-pro-preview", nome: "Gemini 3.1 Pro" },
   { id: "vertex_ai/claude-sonnet-4-6", nome: "Claude Sonnet 4.6" },
   { id: "vertex_ai/claude-opus-4-8", nome: "Claude Opus 4.8 (mais caro)" },
-  { id: "gemini-2.5-flash-br", nome: "Gemini 2.5 Flash (mais barato)" },
 ] as const;
-export const MODELO_PADRAO = "gemini-3.1-pro-preview";        // validado nos agentes (TR real)
+// Medido no TR real (US$ por chamada ~0,065 Pro × ~0,013 Flash). Flash dá conta de resumo,
+// perguntas e dos agentes guiados por ferramenta; NÃO do revisor de português (gastou todo
+// o raciocínio e devolveu vazio) nem do comparador entre documentos.
+export const MODELO_PADRAO = "gemini-2.5-flash-br";            // resumo, auditoria, perguntas
+export const MODELO_AGENTES = "gemini-3.1-pro-preview";        // agentes de leitura fina
+export const MODELO_RAPIDO = "gemini-2.5-flash-br";            // agentes guiados por ferramenta
 export const MODELO_CONTROLADOR = "vertex_ai/claude-opus-4-8"; // mais rigoroso, roda pouco
 
 export interface AiConfig { provider: "tjpe"; apiKey: string; model: string; baseUrl: string }

@@ -13,13 +13,14 @@ const { semSumario } = T;
 export type AgenteId = "a1-revisor" | "a2-consistencia" | "a3-conformidade" | "a4-estrutura" | "a5-dados" | "a6-inconsistencias";
 export interface Documento { nome: string; texto: string }
 export interface Prompts { comum: string; lei: string; agentes: Record<AgenteId, string> }
-export interface LlmConfig { baseUrl: string; apiKey: string; model: string }
+export interface LlmConfig { baseUrl: string; apiKey: string; model: string; modelRapido?: string }
 
 interface Agente {
   id: AgenteId;
   nome: string;
   usaLei: boolean;
   multiDoc: boolean; // precisa de 2+ documentos
+  rapido?: boolean;  // roda no modelo barato (cfg.modelRapido) — validado no TR real
   preTools: (texto: string) => Record<string, unknown>;
   fnTools: (keyof typeof FN)[];
 }
@@ -37,14 +38,14 @@ export const AGENTES: Agente[] = [
       return { extrair_prazos_do_texto: T.extrair_prazos_do_texto(t),
         verificar_clausulas_obrigatorias: { garantias: c.garantias, subcontratacao: c.subcontratacao, penalidades_sancoes: c.penalidades_sancoes } };
     }, fnTools: ["comparar_valores_monetarios"] },
-  { id: "a3-conformidade", nome: "Auditor de Conformidade Legal", usaLei: true, multiDoc: false,
+  { id: "a3-conformidade", nome: "Auditor de Conformidade Legal", usaLei: true, multiDoc: false, rapido: true,
     preTools: (t) => ({ verificar_clausulas_obrigatorias: T.verificar_clausulas_obrigatorias(t),
       verificar_detalhamento_sancoes: T.verificar_detalhamento_sancoes(t) }), fnTools: [] },
-  { id: "a4-estrutura", nome: "Fiscal de Estrutura Documental", usaLei: true, multiDoc: false,
+  { id: "a4-estrutura", nome: "Fiscal de Estrutura Documental", usaLei: true, multiDoc: false, rapido: true,
     preTools: (t) => ({ listar_secoes_do_documento: T.listar_secoes_do_documento(t) }), fnTools: [] },
-  { id: "a5-dados", nome: "Validador de Dados Institucionais", usaLei: false, multiDoc: false,
+  { id: "a5-dados", nome: "Validador de Dados Institucionais", usaLei: false, multiDoc: false, rapido: true,
     preTools: (t) => ({ extrair_dados_institucionais: T.extrair_dados_institucionais(t) }), fnTools: ["validar_cnpj", "validar_cep"] },
-  { id: "a6-inconsistencias", nome: "Detector de Inconsistências Internas", usaLei: false, multiDoc: false,
+  { id: "a6-inconsistencias", nome: "Detector de Inconsistências Internas", usaLei: false, multiDoc: false, rapido: true,
     preTools: (t) => ({ extrair_mencoes_numericas_temporais: T.extrair_mencoes_numericas_temporais(t) }), fnTools: [] },
 ];
 
@@ -173,8 +174,9 @@ function juntarResultados(agente: Agente, docs: Documento[], partes: PromiseSett
   };
 }
 
-async function rodarUmaVez(agente: Agente, docs: Documento[], cfg: LlmConfig, prompts: Prompts): Promise<ResultadoAgente> {
+async function rodarUmaVez(agente: Agente, docs: Documento[], cfgBase: LlmConfig, prompts: Prompts): Promise<ResultadoAgente> {
   const id = agente.id;
+  const cfg = agente.rapido && cfgBase.modelRapido ? { ...cfgBase, model: cfgBase.modelRapido } : cfgBase;
   const messages: Msg[] = montarMensagens(agente, prompts, docs);
   const tools = toolDefs(agente.fnTools);
   const t0 = Date.now();
