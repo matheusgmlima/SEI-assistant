@@ -7,11 +7,14 @@
 import { parseSaida } from "./saida.ts";
 import type { AgenteId } from "./runner.ts";
 
-export type TipoVeredito = "procede" | "falso_positivo";
+export type TipoVeredito = "procede" | "falso_positivo" | "incerto"; // incerto = "não sei avaliar": nunca vira evidência
 export interface Veredito {
   chave: string; processId: string; agente: AgenteId; veredito: TipoVeredito;
   criticidade: string; onde: string; problema: string; trecho: string; nota?: string; em: string;
 }
+/** Avaliação que sustenta mudança AUTOMÁTICA: acerto confirmado, ou falso alarme com motivo
+ *  (sem motivo, não dá para saber se quem avaliou entendeu o achado). */
+export const evidenciaUtil = (v: Veredito) => v.veredito === "procede" || (v.veredito === "falso_positivo" && !!v.nota?.trim());
 export interface Falta { processId: string; agente: AgenteId; texto: string; em: string }
 export interface SinalAutomatico { processId: string; agente: AgenteId; trechosNaoEncontrados: string[]; violacoes: string[] }
 
@@ -24,7 +27,8 @@ Princípios de quem mantém estes agentes — siga-os:
 4. Generalize: a regra precisa valer para qualquer TR/ETP/edital, não só para o documento do caso. Nunca cite o documento do caso nem copie seus trechos no prompt.
 5. Não remova nem enfraqueça regra que sustenta achados com veredito "procede".
 6. Mudança mínima: mantenha estrutura, nome do agente e seções; altere só o necessário. O formato da resposta é definido em outro arquivo comum — não o redefina.
-7. Se a evidência é insuficiente ou contraditória (ex.: um único caso, vereditos divergentes), diga isso e devolva o prompt SEM mudanças.
+7. Quem avalia pode não ser especialista. Julgue cada "Comentário do servidor" diante do trecho e da Lei 14.133: se o motivo for implausível (ex.: diz que não é erro algo que claramente é), DESCONSIDERE aquela avaliação e diga isso no diagnóstico. Falso alarme de criticidade ALTA só muda o prompt se o motivo for convincente.
+8. Se a evidência é insuficiente ou contraditória (ex.: um único caso, vereditos divergentes), diga isso e devolva o prompt SEM mudanças.
 
 Responda EXATAMENTE neste formato:
 DIAGNÓSTICO:
@@ -103,7 +107,7 @@ export function avaliarRegressao(saidaPorProcesso: Record<string, string>, vered
   const placar: PlacarRegressao = { falsosPositivos: { total: 0, eliminados: 0, persistentes: [] }, acertos: { total: 0, mantidos: 0, perdidos: [] } };
   for (const v of vereditos) {
     const saida = saidaPorProcesso[v.processId];
-    if (saida == null) continue;
+    if (saida == null || v.veredito === "incerto") continue;
     const aponta = aindaAponta(saida, v);
     if (v.veredito === "falso_positivo") {
       placar.falsosPositivos.total++;

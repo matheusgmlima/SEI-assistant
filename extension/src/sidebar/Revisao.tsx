@@ -10,41 +10,14 @@ import workerUrl from "pdfjs-dist/legacy/build/pdf.worker.mjs?url";
 import { pdfToText } from "@shared/agents/pdf-text";
 import { rodarAgente, agentesAplicaveis, montarMensagens, AGENTES, type AgenteId, type Documento, type Prompts, type ResultadoAgente, type LlmConfig } from "@shared/agents/runner";
 import { parseSaida, chaveAchado, type Problema } from "@shared/agents/saida";
-import { montarPedidoMelhoria, extrairProposta, avaliarRegressao, type Veredito, type Falta, type SinalAutomatico, type PlacarRegressao } from "@shared/agents/controlador";
+import type { Veredito, Falta } from "@shared/agents/controlador";
 import { ehDocumentoPrincipal, type TipoDoc } from "@shared/agents/sei-docs";
-import { chatCompletion, normalizarConfig, MODELO_AGENTES, MODELO_RAPIDO, MODELO_CONTROLADOR } from "@shared/agents/llm";
+import {
+  promptsAtivos, sget, sset, configLlm, coletarEvidencias, proporMelhoria, testarProposta, aplicarVersao, voltarParaVersao,
+  marcarEvento, registrarEvento, type Overrides, type RevisaoSalva, type Evidencias, type Proposta, type EventoControlador, type StatusControlador,
+} from "../lib/agentes";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
-
-// ── Prompts: versão do pacote + versão aprovada pelo controlador (override) ─────
-const BRUTOS = import.meta.glob("../../../shared/src/agents/prompts/*.md", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
-const LEI = (import.meta.glob("../../../shared/src/agents/conhecimento/lei14133.md", { query: "?raw", import: "default", eager: true }) as Record<string, string>);
-const nomeArquivo = (p: string) => p.split("/").pop()!.replace(".md", "");
-const PROMPTS_BASE: Prompts = {
-  comum: Object.entries(BRUTOS).find(([p]) => nomeArquivo(p) === "_comum")![1],
-  lei: Object.values(LEI)[0],
-  agentes: Object.fromEntries(Object.entries(BRUTOS).filter(([p]) => /^a\d/.test(nomeArquivo(p))).map(([p, t]) => [nomeArquivo(p), t])) as Record<AgenteId, string>,
-};
-export interface VersaoPrompt { versao: number; texto: string; em: string; motivo: string }
-type Overrides = Partial<Record<AgenteId, VersaoPrompt[]>>;
-const promptsAtivos = (ov: Overrides): Prompts => ({
-  ...PROMPTS_BASE,
-  agentes: Object.fromEntries(Object.entries(PROMPTS_BASE.agentes).map(([id, t]) => [id, ov[id as AgenteId]?.at(-1)?.texto ?? t])) as Record<AgenteId, string>,
-});
-
-// ── Storage ─────────────────────────────────────────────────────────────────────
-const sget = <T,>(k: string | null): Promise<T> => new Promise((r) => chrome.storage.local.get(k, (v) => r((k ? v[k] : v) as T)));
-const sset = (o: Record<string, unknown>) => new Promise<void>((r) => chrome.storage.local.set(o, () => r()));
-interface RevisaoSalva { em: string; modelo: string; reaproveitados?: number; documentos: { nome: string; caracteres: number }[]; resultados: ResultadoAgente[] }
-
-async function configLlm(papel: "agentes" | "controlador"): Promise<LlmConfig | null> {
-  const c = normalizarConfig(await sget<unknown>("aiConfig"));
-  if (!c) return null;
-  // escolha validada no TR real: Gemini nos agentes, Opus no controlador
-  return papel === "agentes"
-    ? { baseUrl: c.baseUrl, apiKey: c.apiKey, model: MODELO_AGENTES, modelRapido: MODELO_RAPIDO }
-    : { baseUrl: c.baseUrl, apiKey: c.apiKey, model: MODELO_CONTROLADOR };
-}
 
 // ── Cache de resultados: mesma entrada (documento + prompt + ferramentas + modelo) = mesma
 // revisão — não paga de novo. Prompt aprovado pelo controlador ou documento editado muda a chave.
@@ -281,83 +254,68 @@ function CartaoAgente({ r, processId, vereditos, onVeredito, onFalta }: {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
-// Tela do Controlador
+// Tela do Controlador — painel: atividade automática, pendências e modo manual
 // ════════════════════════════════════════════════════════════════════════════════
-interface Proposta { agente: AgenteId; diagnostico: string; mudancas: string; prompt: string; placar?: PlacarRegressao; testando?: boolean }
+const ROTULO: Record<EventoControlador["tipo"], string> = {
+  aplicado: "✓ Ajustado", pendente: "⏳ Aguardando sua decisão", sem_mudanca: "• Sem mudança (evidência insuficiente)",
+  erro: "✗ Erro", descartado: "Descartado", desfeito: "↶ Desfeito",
+};
 
 export function ControladorScreen({ onBack }: { onBack: () => void }) {
-  const [dados, setDados] = useState<{ vereditos: Veredito[]; faltas: Falta[]; sinais: SinalAutomatico[]; overrides: Overrides; casos: Set<string> } | null>(null);
+  const [dados, setDados] = useState<Evidencias | null>(null);
+  const [log, setLog] = useState<EventoControlador[]>([]);
+  const [status, setStatus] = useState<StatusControlador | null>(null);
   const [proposta, setProposta] = useState<Proposta | null>(null);
   const [ocupado, setOcupado] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
   const [erro, setErro] = useState<string | null>(null);
 
   async function carregar() {
-    const tudo = await sget<Record<string, unknown>>(null);
-    const sinais: SinalAutomatico[] = [];
-    const casos = new Set<string>();
-    for (const [k, v] of Object.entries(tudo)) {
-      if (k.startsWith("revisaoDocs_")) casos.add(k.slice("revisaoDocs_".length));
-      if (!k.startsWith("revisao_")) continue;
-      for (const r of (v as RevisaoSalva).resultados ?? [])
-        sinais.push({ processId: k.slice("revisao_".length), agente: r.agente, trechosNaoEncontrados: r.verificacao?.naoEncontrados ?? [], violacoes: r.violacoes ?? [] });
-    }
-    setDados({ vereditos: (tudo.vereditos as Veredito[]) ?? [], faltas: (tudo.faltas as Falta[]) ?? [], sinais, overrides: (tudo.promptOverrides as Overrides) ?? {}, casos });
+    setDados(await coletarEvidencias());
+    setLog((await sget<EventoControlador[] | undefined>("ctrlLog")) ?? []);
+    setStatus((await sget<StatusControlador | undefined>("ctrlStatus")) ?? null);
   }
-  useEffect(() => { carregar(); }, []);
+  useEffect(() => {
+    carregar();
+    const ouvir = (ch: Record<string, chrome.storage.StorageChange>) => { if (ch.ctrlLog || ch.ctrlStatus || ch.promptOverrides || ch.vereditos) carregar(); };
+    chrome.storage.onChanged.addListener(ouvir);
+    return () => chrome.storage.onChanged.removeListener(ouvir);
+  }, []);
+
+  const nome = (a: AgenteId) => AGENTES.find((x) => x.id === a)!.nome;
 
   async function propor(agente: AgenteId) {
     if (!dados) return;
-    setErro(null); setAviso(null); setProposta(null); setOcupado(`Controlador analisando ${AGENTES.find((a) => a.id === agente)!.nome}…`);
-    try {
-      const cfg = await configLlm("controlador");
-      if (!cfg) throw new Error("Configure a chave da IA.");
-      const atual = promptsAtivos(dados.overrides).agentes[agente];
-      const msgs = montarPedidoMelhoria(AGENTES.find((a) => a.id === agente)!.nome, atual,
-        dados.vereditos.filter((v) => v.agente === agente), dados.faltas.filter((f) => f.agente === agente), dados.sinais.filter((s) => s.agente === agente));
-      const j = await chatCompletion(cfg, msgs, { temperature: 0, tag: "controlador" });
-      const p = extrairProposta(String(j.choices?.[0]?.message?.content ?? ""));
-      if (!p.prompt) throw new Error("O controlador não devolveu um prompt revisado.");
-      setProposta({ agente, diagnostico: p.diagnostico, mudancas: p.mudancas, prompt: p.prompt });
-    } catch (e) { setErro(String((e as Error).message)); }
+    setErro(null); setAviso(null); setProposta(null); setOcupado(`Controlador analisando ${nome(agente)}…`);
+    try { setProposta(await proporMelhoria(agente, dados)); } catch (e) { setErro(String((e as Error).message)); }
     setOcupado(null);
   }
-
   async function testar() {
     if (!proposta || !dados) return;
-    setErro(null); setProposta({ ...proposta, testando: true });
-    try {
-      const cfg = await configLlm("agentes");
-      if (!cfg) throw new Error("Configure a chave da IA.");
-      const comVeredito = [...new Set(dados.vereditos.filter((v) => v.agente === proposta.agente).map((v) => v.processId))].filter((p) => dados.casos.has(p));
-      if (!comVeredito.length) throw new Error("Nenhum caso salvo com veredito para este agente — revise um processo e marque os achados.");
-      const prompts = promptsAtivos(dados.overrides);
-      prompts.agentes[proposta.agente] = proposta.prompt;
-      const saidas: Record<string, string> = {};
-      for (const pid of comVeredito) {
-        setOcupado(`Regressão: reexecutando em ${pid}…`);
-        const docs = await sget<Documento[]>(`revisaoDocs_${pid}`);
-        saidas[pid] = (await rodarAgente(proposta.agente, docs, cfg, prompts)).texto;
-      }
-      setProposta({ ...proposta, testando: false, placar: avaliarRegressao(saidas, dados.vereditos.filter((v) => v.agente === proposta.agente)) });
-    } catch (e) { setErro(String((e as Error).message)); setProposta({ ...proposta, testando: false }); }
+    setErro(null);
+    try { const placar = await testarProposta(proposta, dados, setOcupado); setProposta({ ...proposta, placar }); }
+    catch (e) { setErro(String((e as Error).message)); }
     setOcupado(null);
   }
-
   async function aplicar() {
-    if (!proposta || !dados) return;
-    const hist = dados.overrides[proposta.agente] ?? [];
-    const overrides = { ...dados.overrides, [proposta.agente]: [...hist, { versao: hist.length + 2, texto: proposta.prompt, em: new Date().toISOString(), motivo: proposta.mudancas.slice(0, 500) }] };
-    await sset({ promptOverrides: overrides });
-    setAviso(`✓ Versão ${hist.length + 2} do ${AGENTES.find((a) => a.id === proposta.agente)!.nome} aplicada — vale a partir da próxima revisão.`);
-    setProposta(null); carregar();
+    if (!proposta) return;
+    const versao = await aplicarVersao(proposta.agente, proposta.prompt, proposta.mudancas, "manual");
+    await registrarEvento({ agente: proposta.agente, tipo: "aplicado", diagnostico: proposta.diagnostico, mudancas: proposta.mudancas, placar: proposta.placar, versao });
+    setAviso(`✓ Versão ${versao} do ${nome(proposta.agente)} aplicada — vale a partir da próxima revisão.`);
+    setProposta(null);
   }
-
-  async function reverter(agente: AgenteId, ate: number) {
-    if (!dados) return;
-    const overrides = { ...dados.overrides, [agente]: (dados.overrides[agente] ?? []).slice(0, ate) };
-    await sset({ promptOverrides: overrides });
-    carregar();
+  async function decidirPendente(e: EventoControlador, aceitar: boolean) {
+    if (aceitar && e.prompt) {
+      const versao = await aplicarVersao(e.agente, e.prompt, e.mudancas ?? "", "manual");
+      await marcarEvento(e.id, "aplicado", versao);
+      setAviso(`✓ Versão ${versao} do ${nome(e.agente)} aplicada.`);
+    } else await marcarEvento(e.id, "descartado");
+  }
+  async function desfazer(e: EventoControlador) {
+    if (!e.versao) return;
+    await voltarParaVersao(e.agente, e.versao - 1);
+    await marcarEvento(e.id, "desfeito");
+    setAviso(`↶ ${nome(e.agente)} voltou para a versão ${e.versao - 1}.`);
   }
 
   async function exportar() {
@@ -365,7 +323,6 @@ export function ControladorScreen({ onBack }: { onBack: () => void }) {
     const blob = new Blob([JSON.stringify({ tipo: "sei-assistant-controlador", em: new Date().toISOString(), vereditos: tudo.vereditos ?? [], faltas: tudo.faltas ?? [], promptOverrides: tudo.promptOverrides ?? {} }, null, 2)], { type: "application/json" });
     const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `controlador-agentes-${new Date().toISOString().slice(0, 10)}.json`; a.click();
   }
-
   async function importar(f: File) {
     try {
       const j = JSON.parse(await f.text());
@@ -376,9 +333,11 @@ export function ControladorScreen({ onBack }: { onBack: () => void }) {
         vereditos: uniq([...((atual.vereditos as Veredito[]) ?? []), ...(j.vereditos ?? [])], (v) => v.chave),
         faltas: uniq([...((atual.faltas as Falta[]) ?? []), ...(j.faltas ?? [])], (x) => x.processId + x.agente + x.texto),
       });
-      carregar();
     } catch (e) { setErro(`Importação falhou: ${(e as Error).message}`); }
   }
+
+  // Desfazer só na versão que está ativa agora (desfazer uma antiga apagaria as posteriores)
+  const versaoAtiva = (a: AgenteId) => (dados?.overrides[a]?.length ?? 0) + 1;
 
   return (
     <div className="screen screen--active">
@@ -387,15 +346,38 @@ export function ControladorScreen({ onBack }: { onBack: () => void }) {
         <span className="screen-title">Controlador dos agentes</span>
       </header>
       <div className="ctrl">
-        <p className="ctrl-intro">Os vereditos dados nos achados (✓ procede / ✗ falso alarme / faltou apontar) alimentam o controlador. Ele propõe um prompt melhor, testa nos casos já revisados e só aplica com a sua aprovação.</p>
+        <p className="ctrl-intro">O controlador roda sozinho quando uma avaliação é concluída na tela de correções. Ele só ajusta um agente automaticamente se o teste eliminar falso alarme sem perder nenhum acerto e se as avaliações forem de um especialista — o resto fica aqui para você decidir.</p>
+        {status?.fase && <div className="rev-fase"><span className="collect-spinner" />{status.fase}</div>}
         {aviso && <div className="rev-fase">{aviso}</div>}
         {!proposta && erro && <div className="summary-error summary-error--inline"><p>{erro}</p></div>}
-        {!proposta && ocupado && <div className="rev-fase"><span className="collect-spinner" />{ocupado}</div>}
 
+        {log.length > 0 && (
+          <div className="ctrl-log">
+            <p className="ctrl-rot">Atividade recente</p>
+            {log.slice(0, 12).map((e) => (
+              <div key={e.id} className={`ctrl-evento ctrl-evento--${e.tipo}`}>
+                <div className="ctrl-evento-top"><b>{nome(e.agente)}</b> · {ROTULO[e.tipo]}{e.versao ? ` (v${e.versao})` : ""}
+                  <span className="ctrl-quando">{new Date(e.em).toLocaleString("pt-BR")}</span></div>
+                {e.motivo && e.tipo === "pendente" && <div className="rev-dica">Não aplicado sozinho porque {e.motivo}.</div>}
+                {(e.mudancas || e.diagnostico) && <details><summary>{e.tipo === "erro" ? "detalhe" : "o que mudou e por quê"}</summary>
+                  {e.diagnostico && <pre className="ctrl-pre">{e.diagnostico}</pre>}{e.mudancas && <pre className="ctrl-pre">{e.mudancas}</pre>}</details>}
+                {e.placar && <div className="ctrl-placar-linha">Falsos alarmes eliminados {e.placar.falsosPositivos.eliminados}/{e.placar.falsosPositivos.total} · acertos mantidos {e.placar.acertos.mantidos}/{e.placar.acertos.total}</div>}
+                <div className="ctrl-acoes">
+                  {e.tipo === "pendente" && <><button className="btn-collect" onClick={() => decidirPendente(e, true)}>✓ Aplicar</button>
+                    <button className="btn-collect-reset" onClick={() => decidirPendente(e, false)}>Descartar</button></>}
+                  {e.tipo === "aplicado" && e.versao === versaoAtiva(e.agente) &&
+                    <button className="btn-collect-reset" onClick={() => desfazer(e)}>↶ Desfazer</button>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <p className="ctrl-rot">Agentes</p>
         {dados && AGENTES.map((a) => {
           const vs = dados.vereditos.filter((v) => v.agente === a.id);
           const fp = vs.filter((v) => v.veredito === "falso_positivo").length;
-          const ok = vs.length - fp;
+          const ok = vs.filter((v) => v.veredito === "procede").length;
           const fl = dados.faltas.filter((f) => f.agente === a.id).length;
           const sinais = dados.sinais.filter((s) => s.agente === a.id).reduce((n, s) => n + s.trechosNaoEncontrados.length + s.violacoes.length, 0);
           const hist = dados.overrides[a.id] ?? [];
@@ -410,8 +392,8 @@ export function ControladorScreen({ onBack }: { onBack: () => void }) {
                 <span className={fl ? "ruim" : ""}>+ {fl} faltou</span><span className={sinais ? "ruim" : ""}>⚙ {sinais} sinal(is)</span>
               </div>
               <div className="ctrl-acoes">
-                <button className="btn-collect-reset" disabled={!!ocupado || fp + fl + sinais === 0} onClick={() => propor(a.id)}>🧠 Propor melhoria</button>
-                {hist.length > 0 && <button className="btn-collect-reset" onClick={() => reverter(a.id, hist.length - 1)}>↶ Voltar 1 versão</button>}
+                <button className="btn-collect-reset" disabled={!!ocupado || fp + fl + sinais === 0} onClick={() => propor(a.id)}>🧠 Propor melhoria (manual)</button>
+                {hist.length > 0 && <button className="btn-collect-reset" onClick={() => voltarParaVersao(a.id, hist.length)}>↶ Voltar 1 versão</button>}
               </div>
             </div>
           );
@@ -419,7 +401,7 @@ export function ControladorScreen({ onBack }: { onBack: () => void }) {
 
         {proposta && (
           <div className="ctrl-proposta">
-            <p className="rev-agente-nome">Proposta para {AGENTES.find((a) => a.id === proposta.agente)!.nome}</p>
+            <p className="rev-agente-nome">Proposta para {nome(proposta.agente)}</p>
             <p className="ctrl-rot">Diagnóstico</p><pre className="ctrl-pre">{proposta.diagnostico}</pre>
             <p className="ctrl-rot">Mudanças</p><pre className="ctrl-pre">{proposta.mudancas}</pre>
             <p className="ctrl-rot">Prompt revisado (pode editar)</p>
@@ -432,7 +414,6 @@ export function ControladorScreen({ onBack }: { onBack: () => void }) {
                 {proposta.placar.falsosPositivos.persistentes.map((x, i) => <div key={i}>• ainda aponta: {x}</div>)}
               </div>
             )}
-            {/* status junto dos botões: no topo da tela ninguém vê */}
             {ocupado && <div className="rev-fase"><span className="collect-spinner" />{ocupado}</div>}
             {erro && <div className="summary-error summary-error--inline"><p>{erro}</p></div>}
             {!proposta.placar && !ocupado && <p className="rev-dica">1º clique em 🧪 Testar (roda o agente de novo nos processos já avaliados, leva ~1 min). Depois o Aprovar libera.</p>}
@@ -444,9 +425,10 @@ export function ControladorScreen({ onBack }: { onBack: () => void }) {
             </div>
           </div>
         )}
+        {!proposta && ocupado && <div className="rev-fase"><span className="collect-spinner" />{ocupado}</div>}
 
         <div className="ctrl-acoes ctrl-rodape">
-          <button className="btn-collect-reset" onClick={exportar}>⬇ Exportar vereditos e versões</button>
+          <button className="btn-collect-reset" onClick={exportar}>⬇ Exportar avaliações e versões</button>
           <label className="btn-collect-reset">⬆ Importar de um colega<input type="file" accept=".json" hidden onChange={(e) => e.target.files?.[0] && importar(e.target.files[0])} /></label>
         </div>
       </div>

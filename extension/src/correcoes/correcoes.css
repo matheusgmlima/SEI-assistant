@@ -45,3 +45,8 @@ body { background: var(--color-bg); }
 .cor-rodape { margin-top: 20px; font-size: 12px; color: var(--color-muted); text-align: center; }
 
 @media (max-width: 700px) { .cor-item { grid-template-columns: 1fr; } }
+.cor-op--inc.on { background: var(--color-surface-alt); border-color: var(--color-border-strong); }
+.cor-dica { color: var(--color-muted); font-size: 11px; }
+.cor-concluir { font: inherit; font-size: 12px; padding: 6px 10px; border: 0; border-radius: 6px; background: var(--color-primary); color: #fff; cursor: pointer; }
+.cor-ctrl { background: var(--color-primary-soft); border: 1px solid var(--color-primary-light); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; }
+.cor-ctrl p { margin: 2px 0; }

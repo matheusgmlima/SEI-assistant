@@ -20,7 +20,8 @@ export type MessageType =
   | "AUDIT_PROCESS"
   | "ASK_PROCESS"
   | "START_QUEUE"
-  | "STOP_QUEUE";
+  | "STOP_QUEUE"
+  | "CONTROLADOR_AUTO";
 
 /** Estado da fila de coleta em lote (persistido em storage `collectionQueue`). */
 export interface CollectionQueueState {

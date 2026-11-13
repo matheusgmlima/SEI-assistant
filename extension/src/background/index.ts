@@ -23,6 +23,7 @@ import {
 // ─── IA: LiteLLM do TJPE (regras por modelo em shared/agents/llm.ts) ─────────
 
 import { chatCompletion, normalizarConfig, type AiConfig } from "@shared/agents/llm";
+import { cicloAutomatico } from "../lib/agentes";
 export type { AiConfig };
 
 // ─── Sessão ────────────────────────────────────────────────────────────────────
@@ -528,6 +529,13 @@ async function syncProcessoToDB(details: ProcessDetails): Promise<void> {
 
 chrome.runtime.onMessage.addListener((message: ExtMessage, _sender, sendResponse) => {
   switch (message.type) {
+    // Avaliação concluída na tela de correções → controlador roda sozinho (segundo plano)
+    case "CONTROLADOR_AUTO": {
+      void cicloAutomatico().catch((e) => console.error("[SEI Assistant] controlador automático:", e));
+      sendResponse({ ok: true });
+      break;
+    }
+
     case "SESSION_ENDED": {
       clearSession();
       sendResponse({ ok: true });

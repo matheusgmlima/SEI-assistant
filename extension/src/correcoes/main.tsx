@@ -4,10 +4,11 @@
  * Cada marcação vira um Veredito — é a evidência que o Controlador usa para
  * melhorar os prompts. "Já alterei" = achado procede; "Não é válida" = falso positivo.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { parseSaida, chaveAchado, type Problema, type Criticidade } from "@shared/agents/saida";
 import type { Veredito, Falta } from "@shared/agents/controlador";
+import type { EventoControlador, StatusControlador } from "../lib/agentes";
 import { AGENTES, type AgenteId, type ResultadoAgente } from "@shared/agents/runner";
 
 const processId = new URLSearchParams(location.search).get("proc") ?? "";
@@ -22,6 +23,9 @@ function App() {
   const [revisao, setRevisao] = useState<{ em: string; documentos: { nome: string }[]; resultados: ResultadoAgente[] } | null | undefined>(undefined);
   const [vereditos, setVereditos] = useState<Veredito[]>([]);
   const [soPendentes, setSoPendentes] = useState(false);
+  const [ctrl, setCtrl] = useState<{ status: StatusControlador | null; eventos: EventoControlador[] }>({ status: null, eventos: [] });
+  const abertaEm = useRef(new Date().toISOString());
+  const disparado = useRef(false);
 
   useEffect(() => {
     sget<typeof revisao>(`revisao_${processId}`).then((r) => setRevisao(r ?? null));
@@ -30,6 +34,8 @@ function App() {
     const ouvir = (ch: Record<string, chrome.storage.StorageChange>) => {
       if (ch.vereditos) setVereditos((ch.vereditos.newValue as Veredito[]) ?? []);
       if (ch[`revisao_${processId}`]) setRevisao(ch[`revisao_${processId}`].newValue as typeof revisao);
+      if (ch.ctrlStatus || ch.ctrlLog) Promise.all([sget<StatusControlador>("ctrlStatus"), sget<EventoControlador[]>("ctrlLog")])
+        .then(([status, log]) => setCtrl({ status: status ?? null, eventos: (log ?? []).filter((e) => e.em > abertaEm.current) }));
     };
     chrome.storage.onChanged.addListener(ouvir);
     return () => chrome.storage.onChanged.removeListener(ouvir);
@@ -44,6 +50,15 @@ function App() {
   }), [revisao]);
 
   const porChave = new Map(vereditos.map((v) => [v.chave, v]));
+
+  // Concluiu a avaliação → controlador roda sozinho em segundo plano (o service worker
+  // decide por agente se há evidência nova suficiente; disparar de novo não custa nada).
+  function concluir() {
+    disparado.current = true;
+    chrome.runtime.sendMessage({ type: "CONTROLADOR_AUTO" });
+  }
+  const tudoAvaliado = itens.length > 0 && itens.every((i) => porChave.has(i.chave));
+  useEffect(() => { if (tudoAvaliado && !disparado.current) concluir(); }, [tudoAvaliado]);
 
   async function marcar(it: Item, veredito: Veredito["veredito"] | null, nota?: string) {
     // lê do storage na hora: outra tela pode ter gravado no meio-tempo
@@ -73,8 +88,22 @@ function App() {
           <strong>{feitos} de {itens.length}</strong> avaliadas
           <div className="cor-barra"><span style={{ width: `${itens.length ? (feitos / itens.length) * 100 : 0}%` }} /></div>
           <label><input type="checkbox" checked={soPendentes} onChange={(e) => setSoPendentes(e.target.checked)} /> mostrar só pendentes</label>
+          {feitos > 0 && feitos < itens.length && <button className="cor-concluir" onClick={concluir}>Concluir avaliação</button>}
         </div>
       </header>
+
+      {(ctrl.status?.fase || ctrl.eventos.length > 0) && (
+        <div className="cor-ctrl">
+          {ctrl.status?.fase && <p>🧠 {ctrl.status.fase}</p>}
+          {ctrl.eventos.map((e) => (
+            <p key={e.id}>{e.tipo === "aplicado" ? "✓" : e.tipo === "pendente" ? "⏳" : e.tipo === "erro" ? "✗" : "•"} {AGENTES.find((a) => a.id === e.agente)?.nome}: {
+              e.tipo === "aplicado" ? `ajustado (versão ${e.versao}) — vale na próxima revisão. Dá para desfazer no Controlador.`
+              : e.tipo === "pendente" ? `melhoria proposta, aguardando aprovação no Controlador (${e.motivo}).`
+              : e.tipo === "sem_mudanca" ? "o controlador achou a evidência insuficiente para mudar."
+              : e.tipo === "erro" ? `falhou: ${e.diagnostico}` : e.tipo}</p>
+          ))}
+        </div>
+      )}
 
       {itens.length === 0 && <p className="cor-vazio">Os agentes não apontaram nenhuma correção. 🎉</p>}
 
@@ -90,7 +119,7 @@ function App() {
       })}
 
       <Faltou />
-      <p className="cor-rodape">Suas avaliações alimentam o Controlador dos agentes: “Não é válida” com o motivo é o que mais ajuda a corrigir o agente.</p>
+      <p className="cor-rodape">Ao terminar de avaliar, o Controlador revisa os agentes sozinho. “Não é válida” com o motivo é o que mais ajuda; “Não sei avaliar” não muda nada no agente.</p>
     </div>
   );
 }
@@ -120,11 +149,15 @@ function Cartao({ it, v, onMarcar }: { it: Item; v?: Veredito; onMarcar: (it: It
         <label className={`cor-op cor-op--inv ${estado === "falso_positivo" ? "on" : ""}`}>
           <input type="checkbox" checked={estado === "falso_positivo"} onChange={(e) => onMarcar(it, e.target.checked ? "falso_positivo" : null, motivo.trim() || undefined)} /> Não é válida
         </label>
+        <label className={`cor-op cor-op--inc ${estado === "incerto" ? "on" : ""}`}>
+          <input type="checkbox" checked={estado === "incerto"} onChange={(e) => onMarcar(it, e.target.checked ? "incerto" : null)} /> Não sei avaliar
+        </label>
         {estado === "falso_positivo" && (
           <div className="cor-motivo">
             <label>Quer dizer por que a alteração não é válida?</label>
             <textarea rows={3} value={motivo} placeholder="Ex.: o valor está correto, a tabela soma os itens com frete…" onChange={(e) => setMotivo(e.target.value)} />
             <button disabled={salvo} onClick={() => onMarcar(it, "falso_positivo", motivo.trim() || undefined)}>{salvo && motivo.trim() ? "✓ Motivo salvo" : "Salvar motivo"}</button>
+            {!v?.nota && <span className="cor-dica">Sem o motivo, esta avaliação não ajusta o agente automaticamente.</span>}
           </div>
         )}
       </div>

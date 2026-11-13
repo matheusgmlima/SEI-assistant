@@ -617,9 +617,11 @@ function SettingsScreen({ onBack }: { onBack: () => void }) {
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState(MODELO_PADRAO);
   const [saved, setSaved] = useState(false);
+  const [especialista, setEspecialista] = useState(false);
 
   // config chega assíncrona do storage
   useEffect(() => { if (config) { setApiKey(config.apiKey); setModel(config.model); } }, [config]);
+  useEffect(() => { chrome.storage.local.get("perfilEspecialista", (r) => setEspecialista(!!r.perfilEspecialista)); }, []);
 
   function handleSave() {
     save({ provider: "tjpe", apiKey: apiKey.trim(), model, baseUrl: LITELLM_URL });
@@ -651,6 +653,11 @@ function SettingsScreen({ onBack }: { onBack: () => void }) {
         <select className="settings-select" value={model} onChange={(e) => setModel(e.target.value)}>
           {MODELOS.map((m) => <option key={m.id} value={m.id}>{m.nome}</option>)}
         </select>
+
+        <label className="settings-check">
+          <input type="checkbox" checked={especialista} onChange={(e) => { setEspecialista(e.target.checked); chrome.storage.local.set({ perfilEspecialista: e.target.checked }); }} />
+          <span>Sou da área de contratações — minhas avaliações podem ajustar os agentes automaticamente. Sem marcar, os ajustes ficam aguardando aprovação no Controlador.</span>
+        </label>
 
         <button className="btn-save" onClick={handleSave} disabled={!apiKey.trim()}>
           {saved ? "✓ Salvo!" : "Salvar"}
