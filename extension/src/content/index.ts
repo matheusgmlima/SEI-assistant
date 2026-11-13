@@ -1440,6 +1440,12 @@ function navigateToControleProcessos(): boolean {
 }
 
 // ─── Revisão por agentes: listar e ler documentos da árvore ─────────────────────
+
+/** Página de um processo (árvore visível) e, se informado, do processo certo. */
+function naPaginaDoProcesso(processId?: string): boolean {
+  if (!document.getElementById("ifrArvore")) return false;
+  return !processId || getCurrentProcessId() === processId;
+}
 // Validado no SEI 5.0.5: buscar (fetch) um link REAL do SEI é seguro e reutilizável;
 // nunca montamos URL. Só seguimos links de leitura (allowlist em ehLinkDeLeitura).
 
@@ -1495,11 +1501,26 @@ if (isContextValid()) {
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!isContextValid()) { sendResponse({ ok: false }); return; }
 
+    // Revisão: garante que o processo está aberto — se não estiver, navega por CLIQUE
+    // (Controle de Processos → link do processo), igual à coleta do resumo/auditoria.
+    if (message.type === "REVISAO_ABRIR") {
+      if (!isTopFrame) return;
+      const { processId } = (message.payload ?? {}) as { processId: string };
+      if (naPaginaDoProcesso(processId)) { sendResponse({ ok: true, dados: { pronto: true } }); return true; }
+      safeStorageSet({ [`pendingRevisao_${processId}`]: true });
+      const navegando = isProcessListPage() ? (tryAutoOpenPendingProcess(), true) : navigateToControleProcessos();
+      if (!navegando) chrome.storage.local.remove(`pendingRevisao_${processId}`);
+      sendResponse(navegando ? { ok: true, dados: { pronto: false } }
+        : { ok: false, erro: "Não achei o link do Controle de Processos nesta página do SEI. Abra o processo manualmente." });
+      return true;
+    }
+
     // Revisão: só o frame do topo responde (ele enxerga o iframe da árvore)
     if (message.type === "REVISAO_LISTAR" || message.type === "REVISAO_LER") {
       if (!isTopFrame) return;
       const tarefa = message.type === "REVISAO_LISTAR"
-        ? listarDocumentosRevisao().then((docs) => docs.map(({ src: _s, ...resto }) => resto))
+        ? (naPaginaDoProcesso(message.payload?.processId) ? listarDocumentosRevisao()
+            : Promise.reject(new Error("O SEI está em outro processo ou página."))).then((docs) => docs.map(({ src: _s, ...resto }) => resto))
         : lerDocumentosRevisao((message.payload?.ids ?? []) as string[]);
       tarefa.then((dados) => sendResponse({ ok: true, dados }))
         .catch((e) => sendResponse({ ok: false, erro: String(e?.message ?? e) }));
@@ -1861,6 +1882,13 @@ function checkAndNotify() {
 
         if (onProcessPage) {
           pendingCollectionCheckDone = true;
+          const revKey = `pendingRevisao_${currentId}`;
+          chrome.storage.local.get(revKey, (r) => {
+            if (!isContextValid() || !r[revKey]) return;
+            chrome.storage.local.remove(revKey);
+            // espera a árvore (iframe) carregar antes de avisar que dá para listar
+            setTimeout(() => { if (isContextValid()) safeStorageSet({ [`revisaoAberta_${currentId}`]: Date.now() }); }, 2000);
+          });
           const pendingKey = `pendingCollection_${currentId}`;
           chrome.storage.local.get(pendingKey, (r) => {
             if (!isContextValid() || !r[pendingKey]) return;
@@ -1890,13 +1918,16 @@ function tryAutoOpenPendingProcess() {
   chrome.storage.local.get(null, (all) => {
     if (!isContextValid()) return;
 
-    // Acha qualquer pendingCollection_${processId} ativo
-    const pendingKey = Object.keys(all).find((k) => k.startsWith("pendingCollection_"));
+    // Acha qualquer pendingCollection_/pendingRevisao_${processId} ativo
+    const pendingKey = Object.keys(all).find((k) => k.startsWith("pendingCollection_") || k.startsWith("pendingRevisao_"));
     if (!pendingKey) return;
-    const processId = pendingKey.replace("pendingCollection_", "");
+    const ehRevisao = pendingKey.startsWith("pendingRevisao_");
+    const processId = pendingKey.replace(/^pending(Collection|Revisao)_/, "");
+    // progresso da coleta só para a coleta — a revisão mostra o próprio status
+    const progresso: typeof setCollectionProgress = (...a) => { if (!ehRevisao) setCollectionProgress(...a); };
 
     autoOpenedFromList = true;
-    setCollectionProgress(processId, "Abrindo processo na lista…", 0, 4);
+    progresso(processId, "Abrindo processo na lista…", 0, 4);
 
     // Procura o link do processo na tabela. O número está no texto, link no <a>.
     setTimeout(() => {
@@ -1925,7 +1956,8 @@ function tryAutoOpenPendingProcess() {
 
       // Processo não encontrado na lista visível
       console.warn(`[SEI Assistant] Processo ${processId} não encontrado na lista do Controle de Processos`);
-      setCollectionProgress(
+      if (ehRevisao) safeStorageSet({ [`revisaoAberta_${processId}`]: -1 }); // -1 = não achou na lista
+      progresso(
         processId,
         `Processo ${processId} não está na lista. Abra-o manualmente no SEI.`,
         0, 4, "error",

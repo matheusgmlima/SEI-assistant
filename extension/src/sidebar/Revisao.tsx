@@ -47,15 +47,35 @@ const abrirCorrecoes = (proc: string) =>
   chrome.tabs.create({ url: chrome.runtime.getURL("dist/correcoes.html") + "?proc=" + encodeURIComponent(proc) });
 
 function enviarAbaAtiva<T>(msg: unknown): Promise<T> {
-  return new Promise((resolve, reject) => chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    const id = tabs[0]?.id;
-    if (!id) return reject(new Error("Abra o SEI na aba ativa."));
+  return new Promise((resolve, reject) => chrome.tabs.query({ url: "https://sei.cloud.tjpe.jus.br/*" }, (tabs) => {
+    // prefere a aba do SEI que está à vista; a ativa pode ser a tela de correções
+    const id = (tabs.find((t) => t.active) ?? tabs[0])?.id;
+    if (!id) return reject(new Error("Abra o SEI numa aba do Chrome."));
     chrome.tabs.sendMessage(id, msg, (res) => {
       if (chrome.runtime.lastError || !res) return reject(new Error("Não consegui falar com o SEI. Recarregue a página do SEI (F5)."));
       res.ok ? resolve(res.dados as T) : reject(new Error(res.erro));
     });
   }));
 }
+/** Abre o processo no SEI se preciso (cliques no Controle de Processos → processo) e
+ *  espera a página dele carregar. Mesma navegação segura da coleta do resumo. */
+async function garantirProcessoAberto(processId: string) {
+  const { pronto } = await enviarAbaAtiva<{ pronto: boolean }>({ type: "REVISAO_ABRIR", payload: { processId } });
+  if (pronto) return;
+  const chave = `revisaoAberta_${processId}`;
+  await sset({ [chave]: null });
+  const r = await new Promise<number | null>((resolve) => {
+    const fim = setTimeout(() => { chrome.storage.onChanged.removeListener(ouvir); resolve(null); }, 45_000);
+    function ouvir(ch: Record<string, chrome.storage.StorageChange>) {
+      if (ch[chave]?.newValue == null) return;
+      clearTimeout(fim); chrome.storage.onChanged.removeListener(ouvir); resolve(ch[chave].newValue as number);
+    }
+    chrome.storage.onChanged.addListener(ouvir);
+  });
+  if (r == null) throw new Error("O SEI demorou para abrir o processo. Tente de novo.");
+  if (r === -1) throw new Error("Este processo não aparece no Controle de Processos da unidade. Abra-o manualmente no SEI e tente de novo.");
+}
+
 const base64ParaBytes = (b64: string) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 const ICONE: Record<TipoDoc | "?", string> = { pdf: "📕", interno: "📄", formulario: "📋", outro: "📎", "?": "📎" };
 
@@ -81,9 +101,11 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
   }, [processId]);
 
   async function listar() {
-    setErro(null); setFase("Lendo a árvore do processo…");
+    setErro(null); setFase("Abrindo o processo no SEI…");
     try {
-      const lista = await enviarAbaAtiva<typeof docs>({ type: "REVISAO_LISTAR" });
+      await garantirProcessoAberto(processId);
+      setFase("Lendo a árvore do processo…");
+      const lista = await enviarAbaAtiva<typeof docs>({ type: "REVISAO_LISTAR", payload: { processId } });
       setDocs(lista);
       setSel(new Set((lista ?? []).filter((d) => ehDocumentoPrincipal(d.titulo)).map((d) => d.idInterno)));
     } catch (e) { setErro(String((e as Error).message)); }
@@ -95,6 +117,8 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
     const cfg = await configLlm("agentes");
     if (!cfg) { onSettings(); return; }
     try {
+      setFase("Conferindo se o processo está aberto no SEI…");
+      await garantirProcessoAberto(processId); // a pessoa pode ter mudado de página depois de listar
       setFase(`Baixando ${sel.size} documento(s) do SEI…`);
       const lidos = await enviarAbaAtiva<{ idInterno: string; titulo: string; tipo: string; texto?: string; pdfBase64?: string; erro?: string }[]>({ type: "REVISAO_LER", payload: { ids: [...sel] } });
       const documentos: Documento[] = [];
