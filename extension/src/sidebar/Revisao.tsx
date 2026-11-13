@@ -14,7 +14,7 @@ import type { Veredito, Falta } from "@shared/agents/controlador";
 import { ehDocumentoPrincipal, type TipoDoc } from "@shared/agents/sei-docs";
 import {
   promptsAtivos, sget, sset, configLlm, coletarEvidencias, proporMelhoria, testarProposta, aplicarVersao, voltarParaVersao,
-  marcarEvento, registrarEvento, type Overrides, type RevisaoSalva, type Evidencias, type Proposta, type EventoControlador, type StatusControlador,
+  marcarEvento, registrarEvento, registrarRevisao, type Overrides, type RevisaoSalva, type Evidencias, type Proposta, type EventoControlador, type StatusControlador,
 } from "../lib/agentes";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
@@ -112,10 +112,15 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
       const ids = agentesAplicaveis(documentos);
       setFase(`Rodando ${ids.length} agentes em ${documentos.length} documento(s)…`);
       setStatus(Object.fromEntries(ids.map((i) => [i, "rodando"])));
-      const prompts = promptsAtivos((await sget<Overrides | undefined>("promptOverrides")) ?? {});
+      const overrides = (await sget<Overrides | undefined>("promptOverrides")) ?? {};
+      const prompts = promptsAtivos(overrides);
       const res = await Promise.all(ids.map((id) => rodarComCache(id, documentos, cfg, prompts)
         .then((r) => { setStatus((s) => ({ ...s, [id]: "ok" })); return r; })
         .catch((e) => { setStatus((s) => ({ ...s, [id]: "erro" })); return { agente: id, nome: AGENTES.find((a) => a.id === id)!.nome, texto: "", erro: String((e as Error)?.message ?? e), ms: 0, tokens: { entrada: 0, saida: 0 }, chamadasFerramenta: [], verificacao: { total: 0, verificados: 0, naoEncontrados: [] }, violacoes: [] } as ResultadoAgente; })));
+      for (const r of res) r.versaoPrompt = (overrides[r.agente]?.length ?? 0) + 1;
+      void registrarRevisao({ em: new Date().toISOString(), processId, documentos: documentos.length,
+        agentes: res.map((r) => ({ agente: r.agente, achados: parseSaida(r.texto).problemas.length, custoUsd: (r as { doCache?: boolean }).doCache ? 0 : r.custoUsd ?? 0,
+          tokens: r.tokens.entrada + r.tokens.saida, versao: r.versaoPrompt ?? 1, doCache: !!(r as { doCache?: boolean }).doCache, erro: !!r.erro })) });
       const falhas = res.filter((r) => r.erro);
       if (falhas.length === res.length) throw new Error(`Nenhum agente rodou. ${falhas[0].erro} — confira em ⚙ se o provider é "LiteLLM TJPE" e a chave está correta (modelo usado: ${cfg.model}).`);
       if (falhas.length) setErro(`${falhas.length} agente(s) falharam: ${falhas[0].erro}`);
@@ -132,7 +137,8 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
     const chave = `${processId}|${chaveAchado(agente, p)}`;
     const resto = vereditos.filter((v) => v.chave !== chave);
     const nota = veredito === "falso_positivo" ? vereditos.find((v) => v.chave === chave)?.nota : undefined; // não perde o motivo escrito na tela de correções
-    const novos = veredito ? [...resto, { chave, processId, agente, veredito, criticidade: p.criticidade, onde: p.onde, problema: p.problema, trecho: p.trechos[0] ?? "", ...(nota ? { nota } : {}), em: new Date().toISOString() }] : resto;
+    const versao = salva?.resultados.find((r) => r.agente === agente)?.versaoPrompt;
+    const novos = veredito ? [...resto, { chave, processId, agente, veredito, criticidade: p.criticidade, onde: p.onde, problema: p.problema, trecho: p.trechos[0] ?? "", ...(nota ? { nota } : {}), ...(versao ? { versao } : {}), em: new Date().toISOString() }] : resto;
     setVereditos(novos);
     await sset({ vereditos: novos });
   }
@@ -346,7 +352,7 @@ export function ControladorScreen({ onBack }: { onBack: () => void }) {
         <span className="screen-title">Controlador dos agentes</span>
       </header>
       <div className="ctrl">
-        <p className="ctrl-intro">O controlador roda sozinho quando uma avaliação é concluída na tela de correções. Ele só ajusta um agente automaticamente se o teste eliminar falso alarme sem perder nenhum acerto e se as avaliações forem de um especialista — o resto fica aqui para você decidir.</p>
+        <p className="ctrl-intro">O controlador roda sozinho quando uma avaliação é concluída na tela de correções. Ele só ajusta um agente automaticamente se o teste eliminar falso alarme sem perder nenhum acerto (dá para desfazer) — o resto fica aqui para você decidir.</p>
         {status?.fase && <div className="rev-fase"><span className="collect-spinner" />{status.fase}</div>}
         {aviso && <div className="rev-fase">{aviso}</div>}
         {!proposta && erro && <div className="summary-error summary-error--inline"><p>{erro}</p></div>}

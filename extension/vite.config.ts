@@ -17,6 +17,7 @@ export default defineConfig({
         report: resolve(__dirname, "report.html"),
         dashboard: resolve(__dirname, "dashboard.html"),
         correcoes: resolve(__dirname, "correcoes.html"),
+        estatisticas: resolve(__dirname, "estatisticas.html"),
       },
       output: {
         entryFileNames: "[name]/index.js",

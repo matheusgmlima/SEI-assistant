@@ -15,7 +15,7 @@ const processId = new URLSearchParams(location.search).get("proc") ?? "";
 const sget = <T,>(k: string): Promise<T | undefined> => new Promise((r) => chrome.storage.local.get(k, (v) => r(v[k] as T)));
 const sset = (o: Record<string, unknown>) => new Promise<void>((r) => chrome.storage.local.set(o, () => r()));
 
-interface Item { chave: string; agente: AgenteId; nomeAgente: string; p: Problema; naoAchado: boolean }
+interface Item { chave: string; agente: AgenteId; nomeAgente: string; p: Problema; naoAchado: boolean; versao?: number }
 const ORDEM: Criticidade[] = ["ALTA", "MÉDIA", "BAIXA"];
 const CLASSE = { ALTA: "alta", MÉDIA: "media", BAIXA: "baixa" } as const;
 
@@ -45,7 +45,7 @@ function App() {
     const nao = new Set(r.verificacao.naoEncontrados);
     return parseSaida(r.texto).problemas.map((p) => ({
       chave: `${processId}|${chaveAchado(r.agente, p)}`, agente: r.agente, nomeAgente: r.nome, p,
-      naoAchado: p.trechos.some((t) => nao.has(t)),
+      naoAchado: p.trechos.some((t) => nao.has(t)), versao: r.versaoPrompt,
     }));
   }), [revisao]);
 
@@ -65,7 +65,7 @@ function App() {
     const atuais = ((await sget<Veredito[]>("vereditos")) ?? []).filter((v) => v.chave !== it.chave);
     const novos = veredito ? [...atuais, {
       chave: it.chave, processId, agente: it.agente, veredito, criticidade: it.p.criticidade, onde: it.p.onde,
-      problema: it.p.problema, trecho: it.p.trechos[0] ?? "", ...(nota ? { nota } : {}), em: new Date().toISOString(),
+      problema: it.p.problema, trecho: it.p.trechos[0] ?? "", ...(nota ? { nota } : {}), ...(it.versao ? { versao: it.versao } : {}), em: new Date().toISOString(),
     }] : atuais;
     setVereditos(novos);
     await sset({ vereditos: novos });

@@ -54,6 +54,7 @@ export function corpoChat(model: string, messages: unknown[], o: OpcoesChat = {}
 export interface RespostaChat {
   choices: { message: { role: string; content: unknown; tool_calls?: { id: string; function: { name: string; arguments: string } }[] } }[];
   usage?: { prompt_tokens: number; completion_tokens: number };
+  custoUsd?: number; // header x-litellm-response-cost — custo real cobrado pelo gateway
 }
 
 export async function chatCompletion(cfg: { apiKey: string; model: string; baseUrl?: string }, messages: unknown[], o: OpcoesChat = {}): Promise<RespostaChat> {
@@ -67,5 +68,6 @@ export async function chatCompletion(cfg: { apiKey: string; model: string; baseU
     const msg = (json as { error?: { message?: string } })?.error?.message ?? JSON.stringify(json).slice(0, 300);
     throw new Error(r.status === 401 ? "Chave do LiteLLM inválida ou sem acesso ao modelo (401). Confira em ⚙." : `LiteLLM ${r.status}: ${msg.slice(0, 300)}`);
   }
-  return json as RespostaChat;
+  const custo = Number(r.headers.get("x-litellm-response-cost"));
+  return { ...(json as RespostaChat), ...(Number.isFinite(custo) ? { custoUsd: custo } : {}) };
 }

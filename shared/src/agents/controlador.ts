@@ -11,6 +11,7 @@ export type TipoVeredito = "procede" | "falso_positivo" | "incerto"; // incerto 
 export interface Veredito {
   chave: string; processId: string; agente: AgenteId; veredito: TipoVeredito;
   criticidade: string; onde: string; problema: string; trecho: string; nota?: string; em: string;
+  versao?: number; // versão do prompt que gerou o achado (estatística de evolução)
 }
 /** Avaliação que sustenta mudança AUTOMÁTICA: acerto confirmado, ou falso alarme com motivo
  *  (sem motivo, não dá para saber se quem avaliou entendeu o achado). */

@@ -617,11 +617,11 @@ function SettingsScreen({ onBack }: { onBack: () => void }) {
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState(MODELO_PADRAO);
   const [saved, setSaved] = useState(false);
-  const [especialista, setEspecialista] = useState(false);
+  const [dev, setDev] = useState(false);
 
   // config chega assíncrona do storage
   useEffect(() => { if (config) { setApiKey(config.apiKey); setModel(config.model); } }, [config]);
-  useEffect(() => { chrome.storage.local.get("perfilEspecialista", (r) => setEspecialista(!!r.perfilEspecialista)); }, []);
+  useEffect(() => { chrome.storage.local.get("modoDev", (r) => setDev(!!r.modoDev)); }, []);
 
   function handleSave() {
     save({ provider: "tjpe", apiKey: apiKey.trim(), model, baseUrl: LITELLM_URL });
@@ -655,8 +655,8 @@ function SettingsScreen({ onBack }: { onBack: () => void }) {
         </select>
 
         <label className="settings-check">
-          <input type="checkbox" checked={especialista} onChange={(e) => { setEspecialista(e.target.checked); chrome.storage.local.set({ perfilEspecialista: e.target.checked }); }} />
-          <span>Sou da área de contratações — minhas avaliações podem ajustar os agentes automaticamente. Sem marcar, os ajustes ficam aguardando aprovação no Controlador.</span>
+          <input type="checkbox" checked={dev} onChange={(e) => { setDev(e.target.checked); chrome.storage.local.set({ modoDev: e.target.checked }); }} />
+          <span>Modo desenvolvedor — mostra as estatísticas de evolução e custo dos agentes no menu.</span>
         </label>
 
         <button className="btn-save" onClick={handleSave} disabled={!apiKey.trim()}>
@@ -1941,6 +1941,13 @@ function ActiveScreen({ session }: { session: SessionInfo }) {
   const [view, setView] = useState<View>("main");
   const [selectedProcess, setSelectedProcess] = useState<string | null>(null);
   const [showTut, setShowTut] = useState(false);
+  const [modoDev, setModoDev] = useState(false);
+  useEffect(() => {
+    chrome.storage.local.get("modoDev", (r) => setModoDev(!!r.modoDev));
+    const ouvir = (ch: Record<string, chrome.storage.StorageChange>) => { if (ch.modoDev) setModoDev(!!ch.modoDev.newValue); };
+    chrome.storage.onChanged.addListener(ouvir);
+    return () => chrome.storage.onChanged.removeListener(ouvir);
+  }, []);
 
   // Tutorial automático na primeira abertura
   useEffect(() => {
@@ -2007,6 +2014,7 @@ function ActiveScreen({ session }: { session: SessionInfo }) {
         <p className="actions-label">Ações rápidas</p>
         <ActionItem icon="📋" title="Meus processos" desc="Listar e resumir processos" onClick={() => setView("processes")}/>
         <ActionItem icon="🧠" title="Controlador dos agentes" desc="Vereditos e melhoria dos prompts" onClick={() => setView("controlador")}/>
+        {modoDev && <ActionItem icon="📊" title="Estatísticas dos agentes" desc="Evolução, precisão e custo (dev)" onClick={() => chrome.tabs.create({ url: chrome.runtime.getURL("dist/estatisticas.html") })}/>}
         <ActionItem icon="📈" title="Painel da unidade" desc="Métricas e gargalos" onClick={() => chrome.runtime.sendMessage({ type: "OPEN_DASHBOARD" })}/>
       </nav>
 

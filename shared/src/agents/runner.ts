@@ -97,12 +97,14 @@ type Msg = { role: string; content: unknown; tool_calls?: { id: string; function
 
 async function chamar(cfg: LlmConfig, messages: Msg[], tools: unknown[], tag: string) {
   const r = await chatCompletion(cfg, messages, { temperature: 0, tools, tag });
-  return r as unknown as { choices: { message: Msg }[]; usage?: { prompt_tokens: number; completion_tokens: number } };
+  return r as unknown as { choices: { message: Msg }[]; usage?: { prompt_tokens: number; completion_tokens: number }; custoUsd?: number };
 }
 
 export interface ResultadoAgente {
   agente: AgenteId; nome: string; texto: string; ms: number;
   tokens: { entrada: number; saida: number };
+  custoUsd?: number;     // soma do custo real das chamadas deste agente
+  versaoPrompt?: number; // versão do prompt que gerou o resultado (1 = pacote) — estatística por versão
   chamadasFerramenta: string[];
   verificacao: VerificacaoTrechos;
   erro?: string; // falha de chamada — a tela NUNCA pode mostrar isso como "ok"
@@ -169,6 +171,7 @@ function juntarResultados(agente: Agente, docs: Documento[], partes: PromiseSett
   return {
     agente: agente.id, nome: agente.nome, texto, ms: Math.max(...rs.map((r) => r.ms)),
     tokens: { entrada: rs.reduce((a, r) => a + r.tokens.entrada, 0), saida: rs.reduce((a, r) => a + r.tokens.saida, 0) },
+    custoUsd: rs.reduce((a, r) => a + (r.custoUsd ?? 0), 0),
     chamadasFerramenta: rs.flatMap((r) => r.chamadasFerramenta), verificacao: verificarTrechos(texto, docs),
     violacoes: rs.flatMap((r) => r.violacoes), ...(falhas.length ? { erro: `falhou em: ${falhas.join(" · ")}` } : {}),
   };
@@ -181,15 +184,17 @@ async function rodarUmaVez(agente: Agente, docs: Documento[], cfgBase: LlmConfig
   const tools = toolDefs(agente.fnTools);
   const t0 = Date.now();
   const tokens = { entrada: 0, saida: 0 };
+  let custo = 0;
   const chamadas: string[] = [];
   for (let rodada = 0; rodada < 8; rodada++) {
     const res = await chamar(cfg, messages, tools, `agente-${id}`);
     tokens.entrada += res.usage?.prompt_tokens ?? 0;
     tokens.saida += res.usage?.completion_tokens ?? 0;
+    custo += res.custoUsd ?? 0;
     const msg = res.choices[0].message;
     if (!msg.tool_calls?.length) {
       const { texto, violacoes } = limparSaida(String(msg.content ?? ""), agente.nome);
-      return { agente: id, nome: agente.nome, texto, ms: Date.now() - t0, tokens, chamadasFerramenta: chamadas,
+      return { agente: id, nome: agente.nome, texto, ms: Date.now() - t0, tokens, custoUsd: custo, chamadasFerramenta: chamadas,
         verificacao: verificarTrechos(texto, docs), violacoes };
     }
     messages.push(msg);

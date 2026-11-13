@@ -3,8 +3,8 @@
  * service worker (modo automático, disparado quando o usuário conclui uma avaliação).
  *
  * Ciclo automático por agente: evidência nova suficiente → Controlador (Opus) propõe →
- * regressão nos processos já avaliados → aplica SOZINHO só se eliminou falso alarme, não
- * perdeu nenhum acerto E quem avaliou é especialista; senão fica pendente para o dono.
+ * regressão nos processos já avaliados → aplica SOZINHO só se eliminou falso alarme e não
+ * perdeu nenhum acerto; senão fica pendente para o dono (Desfazer sempre disponível).
  */
 import { rodarAgente, AGENTES, type AgenteId, type Documento, type Prompts, type ResultadoAgente, type LlmConfig } from "@shared/agents/runner";
 import { montarPedidoMelhoria, extrairProposta, avaliarRegressao, evidenciaUtil, type Veredito, type Falta, type SinalAutomatico, type PlacarRegressao } from "@shared/agents/controlador";
@@ -29,6 +29,15 @@ export const promptsAtivos = (ov: Overrides): Prompts => ({
 // ── Storage ─────────────────────────────────────────────────────────────────────
 export const sget = <T,>(k: string | null): Promise<T> => new Promise((r) => chrome.storage.local.get(k, (v) => r((k ? v[k] : v) as T)));
 export const sset = (o: Record<string, unknown>) => new Promise<void>((r) => chrome.storage.local.set(o, () => r()));
+/** Uma linha por revisão rodada (o `revisao_<proc>` guarda só a última) — base das estatísticas. */
+export interface RegistroRevisao {
+  em: string; processId: string; documentos: number;
+  agentes: { agente: AgenteId; achados: number; custoUsd: number; tokens: number; versao: number; doCache: boolean; erro: boolean }[];
+}
+export async function registrarRevisao(r: RegistroRevisao) {
+  const log = (await sget<RegistroRevisao[] | undefined>("statsRevisoes")) ?? [];
+  await sset({ statsRevisoes: [...log, r].slice(-500) });
+}
 export interface RevisaoSalva { em: string; modelo: string; reaproveitados?: number; documentos: { nome: string; caracteres: number }[]; resultados: ResultadoAgente[] }
 
 export async function configLlm(papel: "agentes" | "controlador"): Promise<LlmConfig | null> {
@@ -141,7 +150,6 @@ export async function cicloAutomatico(): Promise<void> {
   const vivo = setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 20_000);
   const status =(fase: string | null) => sset({ ctrlStatus: { fase, em: new Date().toISOString() } satisfies StatusControlador });
   try {
-    const especialista = !!(await sget<boolean | undefined>("perfilEspecialista"));
     const marcos = (await sget<Partial<Record<AgenteId, string>> | undefined>("ctrlAuto")) ?? {};
     for (const { id: agente, nome } of AGENTES) {
       const ev = await coletarEvidencias(); // relê: um ciclo anterior pode ter aplicado versão
@@ -163,14 +171,12 @@ export async function cicloAutomatico(): Promise<void> {
         }
         await status(`Testando a melhoria do ${nome} nos processos já avaliados…`);
         p.placar = await testarProposta(p, ev, (m) => status(`${nome}: ${m}`));
-        if (regressaoSegura(p.placar) && especialista) {
+        if (regressaoSegura(p.placar)) {
           const versao = await aplicarVersao(agente, p.prompt, p.mudancas, "auto");
           await registrarEvento({ agente, tipo: "aplicado", diagnostico: p.diagnostico, mudancas: p.mudancas, placar: p.placar, versao });
         } else {
           await registrarEvento({ agente, tipo: "pendente", diagnostico: p.diagnostico, mudancas: p.mudancas, prompt: p.prompt, placar: p.placar,
-            motivo: !regressaoSegura(p.placar)
-              ? (p.placar.acertos.perdidos.length ? "o teste perdeu um acerto confirmado" : "o teste não eliminou nenhum falso alarme")
-              : "as avaliações não são de um especialista (⚙ Configurações)" });
+            motivo: p.placar.acertos.perdidos.length ? "o teste perdeu um acerto confirmado" : "o teste não eliminou nenhum falso alarme" });
         }
       } catch (e) {
         await registrarEvento({ agente, tipo: "erro", diagnostico: String((e as Error)?.message ?? e) });
