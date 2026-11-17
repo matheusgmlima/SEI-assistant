@@ -1828,3 +1828,6 @@ button:not(:disabled), summary, label[for], .rev-doc { cursor: pointer; }
 .audit-como { padding: 0 2px; }
 .audit-como[open] { display: flex; flex-direction: column; gap: 6px; }
 .audit-stage-note { margin: 0; }
+.portfolio-stats-rot { display: flex; justify-content: space-between; align-items: center; font-size: 11.5px; font-weight: 600; color: var(--color-muted); padding: 8px 12px 0; background: var(--color-surface); }
+.portfolio-stats-rot .btn-link { font-size: 11.5px; padding: 0; }
+.portfolio-stats { padding-top: 6px; }

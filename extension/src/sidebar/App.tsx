@@ -1605,7 +1605,7 @@ function ProcessListScreen({
   const { items, collectedAt, loading, notOnPage, collect } = usePortfolio();
   const { queue, start: startQueue, stop: stopQueue, dismiss: dismissQueue } = useQueue();
   const movedIds = useMovedIds();
-  const [sortKey, setSortKey] = useState<SortKey>("risco");
+  const [sortKey, setSortKey] = useState<SortKey>("numero");
   const [query, setQuery] = useState("");
   const [riskFilter, setRiskFilter] = useState<RiskFilter>(null);
   const [selecting, setSelecting] = useState(false);
@@ -1739,7 +1739,8 @@ function ProcessListScreen({
       {items.length > 0 && (
         <>
           {/* Barra de stats — chips clicáveis filtram por risco */}
-          <div className="portfolio-stats">
+          <p className="portfolio-stats-rot">Filtrar por risco {riskFilter && <button className="btn-link" onClick={() => setRiskFilter(null)}>limpar filtro</button>}</p>
+          <div className="portfolio-stats" role="group" aria-label="Filtrar por risco">
             <StatChip label="Crítico" count={stats.critico} cls="risk--critico"
               active={riskFilter === "critico"} onClick={() => toggleFilter("critico")} />
             <StatChip label="Alto" count={stats.alto} cls="risk--alto"
@@ -1761,9 +1762,9 @@ function ProcessListScreen({
               onChange={(e) => setQuery(e.target.value)}
             />
             <select className="portfolio-sort" aria-label="Ordenar" value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)}>
-              <option value="risco">Risco</option>
+              <option value="numero">Ordem do SEI</option>
+              <option value="risco">Maior risco</option>
               <option value="parado">Mais parados</option>
-              <option value="numero">Ordem original</option>
             </select>
           </div>
 
@@ -1850,6 +1851,7 @@ function StatChip({ label, count, cls, active, onClick }: {
   return (
     <button
       className={`stat-chip ${cls} ${active ? "stat-chip--active" : ""} ${count === 0 ? "stat-chip--empty" : ""}`}
+      aria-pressed={active}
       onClick={onClick}
       disabled={count === 0}
     >
@@ -2034,7 +2036,7 @@ function ActiveScreen({ session }: { session: SessionInfo }) {
         )}
 
         <nav className="actions" aria-label="Menu">
-          <ActionItem icon="lista" title="Meus processos" desc="Toda a unidade, ordenada por risco e tempo parado" onClick={() => setView("processes")}/>
+          <ActionItem icon="lista" title="Meus processos" desc="Todos da unidade, com risco e tempo parado" onClick={() => setView("processes")}/>
           <ActionItem icon="painel" title="Painel da unidade" desc="Gráficos de prazos e gargalos" external onClick={() => chrome.runtime.sendMessage({ type: "OPEN_DASHBOARD" })}/>
           {modoDev && <ActionItem icon="grafico" title="Estatísticas dos agentes" desc="Precisão, evolução e custo (modo desenvolvedor)" external onClick={() => chrome.tabs.create({ url: chrome.runtime.getURL("dist/estatisticas.html") })}/>}
         </nav>
