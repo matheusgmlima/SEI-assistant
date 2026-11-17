@@ -1720,7 +1720,7 @@ function ProcessListScreen({
         <QueueBanner queue={queue} onStop={stopQueue} onDismiss={dismissQueue} />
       )}
 
-      {notOnPage && (
+      {notOnPage && items.length === 0 && (
         <div className="processes-hint">
           <Icon n="alerta" s={14} /> <span>Para atualizar a lista, abra o <strong>Controle de Processos</strong> no SEI e clique em atualizar.</span>
         </div>
@@ -1757,7 +1757,7 @@ function ProcessListScreen({
           <div className="portfolio-controls">
             <input
               className="portfolio-search"
-              placeholder="Buscar por número, tipo ou objeto" aria-label="Buscar processo"
+              placeholder="Buscar processo…" aria-label="Buscar processo"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
@@ -1788,7 +1788,8 @@ function ProcessListScreen({
           )}
           {queueError && <div className="summary-error summary-error--inline" style={{ margin: "0 12px 8px" }}><p>{queueError}</p></div>}
 
-          {timeAgo && !selecting && <p className="processes-meta">Lista atualizada {timeAgo} · mostrando {visible.length} de {items.length}</p>}
+          {timeAgo && !selecting && <p className="processes-meta">Lista atualizada {timeAgo} · mostrando {visible.length} de {items.length}
+            {notOnPage && <><br />Para atualizar, abra o Controle de Processos no SEI.</>}</p>}
 
           <div className="process-list">
             {visible.map((p) => (
@@ -1873,49 +1874,52 @@ function PortfolioCard({ item, onClick, selecting = false, selected = false, isQ
   const riskCls = bucket === "nao" ? "risk--nao"
     : bucket === "ok" ? "risk--baixo"
     : `risk--${bucket}`;
-  const riskLabel = bucket === "nao" ? "A analisar" : RISK_META[bucket].label;
+  const riskLabel = bucket === "nao" ? "" : RISK_META[bucket].label;
   const dias = item.statusInfo?.diasParado ?? null;
-  const parado = dias !== null && !item.statusInfo?.concluido && dias > 0;
+  const concluido = !!item.statusInfo?.concluido;
+  const parado = dias !== null && !concluido && dias > 0;
   const alertaParado = parado && dias > 30;
+  // listas antigas guardavam a atribuição "(login)" como tipo
+  const tipo = item.type && !/^\(.+\)$/.test(item.type) ? item.type : null;
+  const atribuido = item.assignedTo ?? item.type?.match(/^\((.+)\)$/)?.[1] ?? null;
+  const secundario = tipo ?? item.description;
+  const temMeta = !!item.statusInfo || parado || !!atribuido || (!item.collected && !!item.lastUpdate);
 
   return (
     <button
-      className={`process-item process-item--clickable ${selected ? "process-item--selected" : ""} ${isQueueCurrent ? "process-item--current" : ""}`}
+      className={`process-item process-item--clickable ${selected ? "process-item--selected" : ""} ${isQueueCurrent ? "process-item--current" : ""} ${concluido ? "process-item--concluido" : ""}`}
       onClick={onClick}
+      aria-pressed={selecting ? selected : undefined}
     >
       <div className="process-item-top">
         {selecting && (
           <span className={`process-check ${selected ? "process-check--on" : ""}`}>
-            {selected ? "✓" : ""}
+            {selected && <Icon n="ok" s={12} />}
           </span>
         )}
         <span className="process-id">{item.id}</span>
         {hasMoved && <span className="process-moved-tag" title="Movimentou desde a última leitura"><Icon n="sino" s={13} /></span>}
         {isQueueCurrent && <span className="process-queue-tag">lendo…</span>}
-        <span className={`process-risk-badge ${riskCls}`}>
-          {item.audit ? `${riskLabel} · ${item.audit.score}` : riskLabel}
-        </span>
+        {item.audit && (
+          <span className={`process-risk-badge ${riskCls}`} title={`${riskLabel} — nota da auditoria`}>{riskLabel.replace(/^Risco /, "")} · {item.audit.score}</span>
+        )}
       </div>
-      {item.type && <div className="process-type">{item.type}</div>}
-      {item.description && (
-        <div className="process-desc" title={item.description}>
-          {item.description.length > 60 ? item.description.slice(0, 60) + "…" : item.description}
+      {secundario && (
+        <div className="process-desc" title={item.description ?? secundario}>{secundario}</div>
+      )}
+      {temMeta && (
+        <div className="process-meta-row">
+          {item.statusInfo && <span className="process-status-tag">{item.statusInfo.statusLabel}</span>}
+          {parado && (
+            <span className={`process-parado ${alertaParado ? "process-parado--alert" : ""}`}>
+              <Icon n="relogio" s={12} /> {dias} dia{dias === 1 ? "" : "s"} parado
+            </span>
+          )}
+          {atribuido && <span className="process-date" title="Atribuído a">com {atribuido}</span>}
+          {!item.collected && item.lastUpdate && <span className="process-date">{item.lastUpdate}</span>}
         </div>
       )}
-      <div className="process-meta-row">
-        {item.statusInfo && (
-          <span className="process-status-tag">{item.statusInfo.statusLabel}</span>
-        )}
-        {parado && (
-          <span className={`process-parado ${alertaParado ? "process-parado--alert" : ""}`}>
-            <Icon n="relogio" s={12} /> {dias} dia{dias === 1 ? "" : "s"} parado
-          </span>
-        )}
-        {!item.collected && item.lastUpdate && (
-          <span className="process-date">{item.lastUpdate}</span>
-        )}
-        <span className="process-detail-hint"><Icon n="seguir" s={15} /></span>
-      </div>
+      <span className="process-detail-hint" aria-hidden="true"><Icon n="seguir" s={15} /></span>
     </button>
   );
 }

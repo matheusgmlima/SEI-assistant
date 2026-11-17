@@ -1831,3 +1831,15 @@ button:not(:disabled), summary, label[for], .rev-doc { cursor: pointer; }
 .portfolio-stats-rot { display: flex; justify-content: space-between; align-items: center; font-size: 11.5px; font-weight: 600; color: var(--color-muted); padding: 8px 12px 0; background: var(--color-surface); }
 .portfolio-stats-rot .btn-link { font-size: 11.5px; padding: 0; }
 .portfolio-stats { padding-top: 6px; }
+
+/* Cartão de processo mais enxuto: seta centralizada, sem linhas vazias */
+.process-item--clickable { position: relative; padding-right: 32px; gap: 3px; }
+.process-item--clickable .process-detail-hint { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); margin: 0; display: inline-flex; }
+.process-item-top { justify-content: flex-start; }
+.process-item-top .process-risk-badge { margin-left: auto; }
+.process-desc { font-size: 12.5px; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.process-item--concluido { background: var(--color-surface-alt); }
+.process-item--concluido .process-id { color: var(--color-muted); }
+.process-check svg { display: block; }
+.process-id { white-space: nowrap; }
+.processes-meta { line-height: 1.5; padding-left: 12px; padding-right: 12px; }

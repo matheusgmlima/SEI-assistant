@@ -179,7 +179,7 @@ function extractProcessList(): SeiProcess[] {
 
       if (cells.length >= 3) {
         const v = cells[2]?.textContent?.trim() ?? "";
-        if (v.length > 2 && !PROCESS_NUMBER_REGEX.test(v)) type = v;
+        if (v.length > 2 && !PROCESS_NUMBER_REGEX.test(v) && !/^\(.+\)$/.test(v)) type = v; // "(login)" é a atribuição, não o tipo
       }
       if (cells.length >= 4) {
         const v = cells[3]?.textContent?.trim() ?? "";

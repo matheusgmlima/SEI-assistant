@@ -1,6 +1,6 @@
 body { background: var(--color-bg); }
 .est { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; font-size: 13px; color: var(--color-text); }
-.est h1 { margin: 0 0 4px; font-size: 22px; color: var(--color-primary-dark); }
+.est h1 { margin: 0 0 4px; font-family: var(--font-titulo); font-weight: 600; font-size: 26px; color: var(--color-primary-dark); }
 .est h2 { font-size: 14px; margin: 28px 0 8px; color: var(--color-primary-dark); }
 .est-vazio { padding: 48px; text-align: center; color: var(--color-muted); }
 .est-meta { margin: 0 0 8px; color: var(--color-muted); font-size: 12px; }
