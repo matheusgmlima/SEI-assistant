@@ -823,14 +823,6 @@ button:not(:disabled), summary, label[for], .rev-doc { cursor: pointer; }
   color: #fff;
 }
 
-/* Toolbar acima da timeline de tramitação */
-.tram-toolbar {
-  display: flex;
-  gap: var(--sp-2);
-  margin: var(--sp-3) 0 var(--sp-2);
-}
-.tram-toolbar .btn-summarize { flex: 1; }
-
 /* Variantes inline (sem margin extra) para uso embutido em outras abas */
 .summary-loading--inline {
   margin: 0 0 var(--sp-2);
@@ -851,16 +843,6 @@ button:not(:disabled), summary, label[for], .rev-doc { cursor: pointer; }
 }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
-.tram-spinner {
-  display: inline-block;
-  width: 12px;
-  height: 12px;
-  border: 2px solid #BAE6FD;
-  border-top-color: #0EA5E9;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-  flex-shrink: 0;
-}
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ── Coleta guiada ───────────────────────────────────────────────────────────── */
@@ -1087,217 +1069,6 @@ button:not(:disabled), summary, label[for], .rev-doc { cursor: pointer; }
   border-color: var(--color-border-strong);
   box-shadow: var(--shadow-xs);
 }
-
-/* ── Tramitação — árvore com datas ───────────────────────────────────────────── */
-.tram-tree {
-  padding: var(--sp-3) var(--sp-3) var(--sp-4);
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  margin-top: var(--sp-2);
-  display: flex;
-  flex-direction: column;
-  box-shadow: var(--shadow-xs);
-}
-
-.tram-notice {
-  font-size: 12px;
-  color: var(--color-warning-text);
-  background: var(--color-warning-bg);
-  border: 1px solid var(--color-warning-border);
-  border-radius: var(--radius-md);
-  padding: var(--sp-2) var(--sp-3);
-  margin-bottom: var(--sp-3);
-  line-height: 1.5;
-}
-
-.tram-node {
-  display: flex;
-  gap: 0;
-}
-.tram-node--current .tram-unit-name { color: var(--color-accent); }
-
-/* Spine: bullet + linha vertical */
-.tram-spine {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  width: 20px;
-  flex-shrink: 0;
-  padding-top: 4px;
-}
-.tram-bullet {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--color-primary);
-  border: 2px solid var(--color-surface);
-  box-shadow: 0 0 0 1.5px var(--color-primary);
-  flex-shrink: 0;
-  z-index: 1;
-}
-.tram-bullet--active {
-  background: var(--color-accent);
-  box-shadow: 0 0 0 1.5px var(--color-accent), 0 0 0 5px rgba(0, 163, 217, 0.18);
-}
-.tram-spine-line {
-  flex: 1;
-  width: 2px;
-  min-height: 10px;
-  background: var(--color-border);
-  margin: 4px 0 0;
-}
-
-/* Corpo da fase */
-.tram-body {
-  flex: 1;
-  min-width: 0;
-  padding: 0 0 var(--sp-3) var(--sp-2);
-}
-
-.tram-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  cursor: pointer;
-  gap: var(--sp-2);
-  padding: 2px 0;
-}
-.tram-header-right {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-1);
-  flex-shrink: 0;
-}
-.tram-unit-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--color-text);
-  line-height: 1.35;
-  word-break: break-word;
-}
-.tram-badge {
-  font-size: 10.5px;
-  font-weight: 700;
-  color: var(--color-primary);
-  background: var(--color-primary-light);
-  border-radius: var(--radius-pill);
-  padding: 2px 7px;
-  white-space: nowrap;
-  letter-spacing: 0.02em;
-}
-.tram-badge--active {
-  color: var(--color-surface);
-  background: var(--color-accent);
-}
-.tram-badge--concluded {
-  color: #166534;
-  background: var(--color-success-bg);
-  border: 1px solid var(--color-success-border);
-}
-.tram-chevron {
-  font-size: 11px;
-  color: var(--color-muted);
-  width: 12px;
-  text-align: center;
-}
-
-/* Datas + proporção */
-.tram-dates {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
-  margin-top: 3px;
-  font-size: 11px;
-  color: var(--color-muted);
-}
-.tram-pct {
-  font-size: 11px;
-  color: var(--color-primary);
-  font-weight: 600;
-}
-
-/* Barra proporcional */
-.tram-bar-track {
-  height: 4px;
-  background: var(--color-border);
-  border-radius: var(--radius-pill);
-  margin-top: 5px;
-  overflow: hidden;
-}
-.tram-bar-fill {
-  height: 100%;
-  background: var(--color-primary);
-  border-radius: var(--radius-pill);
-  transition: width 0.3s ease;
-}
-.tram-bar-fill--active { background: linear-gradient(90deg, var(--color-primary) 0%, var(--color-accent) 100%); }
-
-/* Lista de despachos */
-.tram-despachos {
-  list-style: none;
-  margin-top: var(--sp-2);
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.tram-despacho-item {
-  display: flex;
-  align-items: baseline;
-  gap: var(--sp-2);
-  font-size: 11.5px;
-  padding: var(--sp-1) var(--sp-2);
-  background: var(--color-surface-alt);
-  border-left: 2px solid var(--color-primary);
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  flex-wrap: wrap;
-}
-.tram-despacho-id {
-  font-family: ui-monospace, "Cascadia Code", monospace;
-  font-size: 11px;
-  color: var(--color-primary);
-  font-weight: 600;
-  flex-shrink: 0;
-}
-.tram-despacho-title {
-  color: var(--color-text);
-  flex: 1;
-  word-break: break-word;
-}
-.tram-despacho-date {
-  font-size: 11px;
-  color: var(--color-muted);
-  flex-shrink: 0;
-  font-family: ui-monospace, monospace;
-}
-
-/* Rodapé total */
-.tram-total {
-  margin-top: var(--sp-2);
-  padding: var(--sp-2) 0 0 28px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--color-muted);
-  border-top: 1px solid var(--color-border);
-}
-
-/* Estado vazio */
-.tram-empty {
-  padding: var(--sp-5) var(--sp-4);
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  margin-top: var(--sp-2);
-  font-size: 12px;
-  color: var(--color-muted);
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
-  line-height: 1.6;
-  text-align: center;
-  box-shadow: var(--shadow-xs);
-}
-.tram-hint { font-size: 11px; }
 
 /* ── Auditoria ───────────────────────────────────────────────────────────────── */
 
@@ -1631,7 +1402,6 @@ button:not(:disabled), summary, label[for], .rev-doc { cursor: pointer; }
   transition: background var(--t-fast), border-color var(--t-fast);
 }
 .qa-suggestion:hover { background: var(--color-primary-light); border-color: var(--color-primary); }
-.qa-suggestion::before { content: "💬 "; opacity: 0.6; }
 
 /* Mensagens */
 .qa-msg { display: flex; }
@@ -1965,3 +1735,96 @@ button:not(:disabled), summary, label[for], .rev-doc { cursor: pointer; }
 .detail-meta .detail-field:last-child { border-bottom: none; }
 .detail-tab { flex: 1 1 0; min-width: 58px; padding: 9px 2px 8px; }
 .rev--resultado .rev-passo { order: 5; }
+
+/* ── Tramitação ──────────────────────────────────────────────────────────────── */
+.tram { display: flex; flex-direction: column; gap: 10px; }
+.tram-vazio { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; padding: 18px 14px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-primary); }
+.tram-vazio-tit { font-size: 14px; font-weight: 700; color: var(--color-primary-dark); }
+.tram-vazio-txt { font-size: 12.5px; color: var(--color-text-soft); line-height: 1.5; }
+.tram-vazio .aviso { text-align: left; }
+.tram-sub { font-size: 12px; color: var(--color-muted); margin-top: 2px; }
+.aviso--info { color: var(--color-primary-dark); background: var(--color-primary-soft); border-color: var(--color-primary-light); align-items: center; }
+
+.tram-agora { background: var(--color-surface); border: 1px solid var(--color-border); border-top: 3px solid var(--color-accent); border-radius: var(--radius-md); padding: 12px 14px; }
+.tram-agora-rot { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--color-muted); }
+.tram-agora-unid { font-family: var(--font-titulo); font-size: 18px; line-height: 1.3; color: var(--color-primary-dark); margin: 2px 0; }
+.tram-agora-meta { font-size: 12.5px; color: var(--color-text-soft); }
+.txt-alerta { color: var(--sev-alto); }
+
+/* linha do tempo: marcos ligados por uma linha à esquerda */
+.tram-lista { list-style: none; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 12px 12px 4px 10px; }
+.tram-fase { display: flex; gap: 10px; position: relative; padding-bottom: 14px; }
+.tram-fase:not(:last-child)::before { content: ""; position: absolute; left: 5px; top: 14px; bottom: 0; width: 2px; background: var(--color-border); }
+.tram-marco { width: 12px; height: 12px; margin-top: 3px; border-radius: 50%; background: var(--color-surface); border: 2px solid var(--color-primary); flex-shrink: 0; z-index: 1; }
+.tram-fase--atual .tram-marco { background: var(--color-accent); border-color: var(--color-accent); box-shadow: 0 0 0 4px rgba(0, 163, 217, .18); }
+.tram-fase-corpo { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.tram-fase-topo { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.tram-fase-unid { font-size: 13px; font-weight: 600; color: var(--color-text); line-height: 1.35; word-break: break-word; }
+.tram-fase--atual .tram-fase-unid { color: var(--color-primary-dark); }
+.tram-dias { font-size: 12px; font-weight: 700; color: var(--color-text-soft); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tram-dias--atual { color: #fff; background: var(--color-accent); border-radius: var(--radius-pill); padding: 1px 8px; }
+.tram-fase-datas { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11.5px; color: var(--color-muted); }
+.tram-gargalo { color: var(--sev-alto); font-weight: 700; }
+.tram-barra { height: 4px; background: var(--color-bg); border-radius: 2px; overflow: hidden; margin-top: 2px; }
+.tram-barra span { display: block; height: 100%; background: var(--color-primary); opacity: .55; }
+.tram-fase--atual .tram-barra span { background: var(--color-accent); opacity: 1; }
+.tram-desp-btn { align-self: flex-start; font-size: 11.5px; padding: 2px 0; }
+.rot-90b { transform: rotate(90deg); }
+.tram-despachos { list-style: none; display: flex; flex-direction: column; gap: 3px; }
+.tram-despacho-item { display: flex; flex-direction: column; gap: 1px; font-size: 12px; padding: 5px 8px; background: var(--color-surface-alt); border-left: 2px solid var(--color-border-strong); border-radius: 0 4px 4px 0; }
+.tram-despacho-title { color: var(--color-text); word-break: break-word; }
+.tram-despacho-id { font-size: 11px; color: var(--color-muted); font-family: var(--font-mono); }
+.tram-atualizar { align-self: center; }
+
+/* ── Auditoria (redesenho) ───────────────────────────────────────────────────── */
+.audit-loading { line-height: 1.45; }
+.audit-empty { align-items: center; text-align: center; color: var(--color-primary); gap: 8px; }
+.audit-empty-title { font-size: 14px; font-weight: 700; color: var(--color-primary-dark); }
+.audit-empty-desc { color: var(--color-text-soft); }
+.audit-empty-lista { list-style: none; display: flex; flex-direction: column; gap: 6px; text-align: left; width: 100%; font-size: 12.5px; color: var(--color-text-soft); }
+.audit-empty-lista li { display: flex; gap: 8px; align-items: flex-start; padding: 7px 10px; background: var(--color-surface-alt); border-radius: 6px; }
+.audit-empty-lista svg { color: var(--color-primary); flex-shrink: 0; margin-top: 2px; }
+.audit-empty-hint { font-size: 11.5px; color: var(--color-muted); background: none; border: none; padding: 0; }
+.audit-empty .aviso { text-align: left; }
+
+.audit-scorecard { gap: 14px; padding: 14px; }
+.audit-score-ring { width: 72px; height: 72px; border: none; padding: 6px; }
+.risk--critico .audit-score-ring, .risk--alto .audit-score-ring, .risk--medio .audit-score-ring, .risk--baixo .audit-score-ring { border: none; }
+.audit-score-in { width: 100%; height: 100%; border-radius: 50%; background: var(--color-surface); display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.audit-score-num { font-family: var(--font-titulo); font-size: 24px; }
+.audit-score-max { font-size: 10.5px; }
+.audit-score-info { gap: 4px; }
+.audit-frase { font-size: 13px; font-weight: 600; color: var(--color-text); line-height: 1.35; }
+.audit-stage { font-size: 12px; font-weight: 500; color: var(--color-muted); }
+
+.audit-section-label { display: flex; align-items: center; gap: 6px; }
+.audit-n { font-size: 11px; font-weight: 700; letter-spacing: 0; text-transform: none; color: var(--color-text-soft); background: var(--color-bg); border-radius: 99px; padding: 0 7px; }
+.audit-sub { font-size: 11.5px; font-weight: 700; color: var(--color-text-soft); margin: 8px 0 4px; }
+.audit-sub:first-of-type { margin-top: 0; }
+.audit-no-findings { display: flex; align-items: center; gap: 6px; }
+
+.audit-finding-head { padding: 9px 10px 2px; align-items: flex-start; }
+.audit-finding-title { font-size: 13px; }
+.audit-finding-chevron { display: inline-flex; margin-top: 2px; }
+.audit-finding-tags { display: flex; gap: 6px; padding: 0 10px 9px; }
+.audit-sev { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 99px; }
+.audit-sev.sev--critico { color: var(--sev-critico); background: var(--sev-critico-bg); }
+.audit-sev.sev--alto { color: var(--sev-alto); background: var(--sev-alto-bg); }
+.audit-sev.sev--medio { color: var(--sev-medio); background: var(--sev-medio-bg); }
+.audit-sev.sev--baixo { color: var(--sev-baixo); background: var(--sev-baixo-bg); }
+.audit-finding-desc, .audit-finding-rec { font-size: 12.5px; }
+
+.audit-check { font-size: 12.5px; padding: 4px 0; align-items: flex-start; }
+.audit-check-icon { width: 18px; height: 18px; margin-top: 0; }
+.audit-check--ausente .audit-check-icon { color: var(--color-muted); background: var(--color-bg); }
+.audit-check--ausente .audit-check-icon.is-crit { color: #fff; background: var(--sev-alto); }
+.audit-check--ausente .audit-check-label { color: var(--color-text); }
+.audit-check--presente .audit-check-icon { color: #fff; background: var(--sev-ok); }
+.audit-check--na .audit-check-label { color: var(--color-muted); }
+.audit-check-tag { font-size: 10.5px; text-transform: none; letter-spacing: 0; }
+.audit-futuros { margin-top: 8px; }
+.audit-futuros summary, .audit-como summary { font-size: 12px; font-weight: 600; color: var(--color-primary); padding: 2px 0; }
+.audit-futuros[open] summary { margin-bottom: 4px; }
+.audit-como { padding: 0 2px; }
+.audit-como[open] { display: flex; flex-direction: column; gap: 6px; }
+.audit-stage-note { margin: 0; }
