@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ProcessDetails, SessionInfo } from "@shared/index";
 import { computeMetrics, type DashMetrics, type RiskSlice, type BarItem } from "./metrics";
+import { Icon } from "../sidebar/ui";
 
 // ─── Hook: carrega processos coletados do storage ───────────────────────────────
 function useCollectedProcesses() {
   const [list, setList] = useState<ProcessDetails[]>([]);
   const [unit, setUnit] = useState<string | null>(null);
+  const [naUnidade, setNaUnidade] = useState(0); // processos listados no Controle de Processos
   const [loaded, setLoaded] = useState(false);
   const [refreshedAt, setRefreshedAt] = useState<number>(Date.now());
 
@@ -18,6 +20,7 @@ function useCollectedProcesses() {
       setList(procs);
       const s = all.session as SessionInfo | undefined;
       setUnit(s?.unit ?? null);
+      setNaUnidade(Array.isArray(all.processes) ? all.processes.length : 0);
       setLoaded(true); setRefreshedAt(Date.now());
     });
   }, []);
@@ -31,7 +34,7 @@ function useCollectedProcesses() {
     return () => chrome.storage.onChanged.removeListener(fn);
   }, [reload]);
 
-  return { list, unit, loaded, reload, refreshedAt };
+  return { list, unit, naUnidade, loaded, reload, refreshedAt };
 }
 
 // ─── Gráficos (SVG/CSS puro) ─────────────────────────────────────────────────────
@@ -44,8 +47,8 @@ function Donut({ slices }: { slices: RiskSlice[] }) {
 
   return (
     <div className="donut-wrap">
-      <svg width="120" height="120" viewBox="0 0 120 120">
-        <circle cx={cx} cy={cy} r={r} fill="none" stroke="#eef1f6" strokeWidth={sw} />
+      <svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label={slices.map((s) => `${s.label}: ${s.count}`).join(", ")}>
+        <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--bg)" strokeWidth={sw} />
         {slices.map((s, i) => {
           const frac = s.count / total;
           const dash = frac * c;
@@ -80,8 +83,8 @@ function Donut({ slices }: { slices: RiskSlice[] }) {
   );
 }
 
-function BarChart({ items, unit = "", color = "var(--p)" }: { items: BarItem[]; unit?: string; color?: string }) {
-  if (items.length === 0) return <div className="dash-empty-mini">Sem dados</div>;
+function BarChart({ items, unit = "", color = "var(--p)", vazio = "Sem dados" }: { items: BarItem[]; unit?: string; color?: string; vazio?: string }) {
+  if (items.length === 0) return <div className="dash-empty-mini">{vazio}</div>;
   const max = Math.max(...items.map((i) => i.count), 1);
   return (
     <div className="bars">
@@ -99,9 +102,9 @@ function BarChart({ items, unit = "", color = "var(--p)" }: { items: BarItem[]; 
 }
 
 // ─── KPI ─────────────────────────────────────────────────────────────────────────
-function Kpi({ value, label, hint, tone }: { value: string | number; label: string; hint?: string; tone?: string }) {
+function Kpi({ value, label, hint, tone, info }: { value: string | number; label: string; hint?: string; tone?: string; info?: string }) {
   return (
-    <div className={`kpi ${tone ? `kpi--${tone}` : ""}`}>
+    <div className={`kpi ${tone ? `kpi--${tone}` : ""}`} title={info}>
       <div className="kpi-value">{value}</div>
       <div className="kpi-label">{label}</div>
       {hint && <div className="kpi-hint">{hint}</div>}
@@ -119,91 +122,104 @@ const RISK_BADGE: Record<string, { label: string; cls: string }> = {
 
 // ─── App ───────────────────────────────────────────────────────────────────────
 export default function Dashboard() {
-  const { list, unit, loaded, reload, refreshedAt } = useCollectedProcesses();
+  const { list, unit, naUnidade, loaded, reload, refreshedAt } = useCollectedProcesses();
   const m: DashMetrics = useMemo(() => computeMetrics(list), [list]);
   const [reloaded, setReloaded] = useState(false);
 
   function doReload() {
     reload(); setReloaded(true); setTimeout(() => setReloaded(false), 1800);
   }
+  const cobertura = naUnidade > 0 ? Math.min(1, m.total / naUnidade) : null;
 
   return (
     <div className="dash">
       <header className="dash-header">
         <div>
-          <h1 className="dash-title">Painel da Unidade</h1>
-          <p className="dash-sub">{unit ?? "SEI Assistant — TJPE"}</p>
+          <p className="dash-kicker">SEI Assistant · Painel da unidade</p>
+          <h1 className="dash-title">{unit ?? "Sua unidade"}</h1>
+          <p className="dash-sub">Atualizado às {new Date(refreshedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })} com os processos que a extensão já leu.</p>
         </div>
-        <div className="dash-head-right">
-          <button className="dash-reload" onClick={doReload}>{reloaded ? "✓ Atualizado" : "🔄 Recarregar"}</button>
-          <div className="dash-updated">{m.total} processos · dados de {new Date(refreshedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</div>
-        </div>
+        <button className="dash-reload" onClick={doReload}>
+          {reloaded ? <><Icon n="ok" s={14} /> Atualizado</> : <><Icon n="atualizar" s={14} /> Atualizar</>}
+        </button>
       </header>
 
       {!loaded ? (
         <div className="dash-loading">Carregando dados…</div>
       ) : m.total === 0 ? (
         <div className="dash-empty">
-          <p className="dash-empty-title">Nenhum processo coletado ainda</p>
+          <Icon n="painel" s={32} />
+          <p className="dash-empty-title">Ainda não há processos lidos</p>
           <p className="dash-empty-desc">
-            Abra processos no SEI e use “Coletar dados do processo” na barra lateral.
-            As métricas aparecem aqui automaticamente.
+            O painel é montado a partir dos processos que a extensão leu. Na barra lateral do SEI, abra
+            <b> Meus processos</b> → <b>Ler vários</b>, escolha os processos e clique em <b>Ler</b>. Os números aparecem aqui sozinhos.
           </p>
         </div>
       ) : (
         <>
-          {/* KPIs */}
-          <div className="kpi-row">
-            <Kpi value={m.total} label="Processos" hint={`${m.auditados} auditados`} />
-            <Kpi value={m.scoreMedia ?? "—"} label="Score médio" hint="conformidade" tone={scoreTone(m.scoreMedia)} />
-            <Kpi value={m.tempoMedioParado ?? "—"} label="Dias na fase" hint="média (em curso)" />
-            <Kpi value={m.parados90} label="Parados +90d" hint={`${m.parados30} parados +30d`} tone={m.parados90 > 0 ? "alert" : undefined} />
-            <Kpi value={m.concluidos} label="Concluídos" tone="ok" />
-          </div>
+          {cobertura !== null && cobertura < 1 && (
+            <div className="dash-cobertura">
+              <div className="dash-cob-txt">
+                <b>{m.total} de {naUnidade}</b> processos da unidade já foram lidos.
+                <span> Os números abaixo valem só para esses. Para completar, use <b>Meus processos → Ler vários</b> na barra lateral.</span>
+              </div>
+              <div className="dash-cob-barra" aria-hidden="true"><span style={{ width: `${cobertura * 100}%` }} /></div>
+            </div>
+          )}
 
-          {/* Grid de gráficos */}
+          <section className="kpi-row" aria-label="Indicadores">
+            <Kpi value={m.total} label="Processos lidos" hint={`${m.auditados} com auditoria`} />
+            <Kpi value={m.scoreMedia ?? "—"} label="Nota média de conformidade" hint="de 0 a 100" tone={scoreTone(m.scoreMedia)}
+              info="Média das notas da aba Auditoria. Abaixo de 60 = atenção." />
+            <Kpi value={m.tempoMedioParado ?? "—"} label="Dias na fase atual" hint="média dos processos em andamento" />
+            <Kpi value={m.parados90} label="Parados há mais de 90 dias" hint={`${m.parados30} há mais de 30 dias`} tone={m.parados90 > 0 ? "alert" : undefined} />
+            <Kpi value={m.concluidos} label="Concluídos" tone={m.concluidos > 0 ? "ok" : undefined} />
+          </section>
+
+          <Card title="Precisam de atenção" subtitle="Os mais arriscados e mais parados primeiro. Para resolver, abra o processo no SEI e use a barra lateral.">
+            <div className="dash-table-wrap">
+              <table className="dash-table">
+                <thead>
+                  <tr><th>Processo</th><th>Tipo</th><th>Risco</th><th>Situação</th><th className="num">Parado</th></tr>
+                </thead>
+                <tbody>
+                  {m.atencao.map((a) => {
+                    const rb = RISK_BADGE[a.risk] ?? RISK_BADGE.nao;
+                    return (
+                      <tr key={a.id}>
+                        <td className="dt-id">{a.id}</td>
+                        <td className="dt-type" title={a.type ?? ""}>{a.type ?? "—"}</td>
+                        <td><span className={`rb ${rb.cls}`}>{rb.label}{a.score !== null ? ` · ${a.score}` : ""}</span></td>
+                        <td>{a.statusLabel}</td>
+                        <td className={`num ${a.diasParado !== null && a.diasParado > 30 ? "dt-alert" : ""}`}>
+                          {a.diasParado !== null ? `${a.diasParado} dias` : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
           <div className="dash-grid">
-            <Card title="Distribuição de risco">
+            <Card title="Onde os processos demoram" subtitle="Tempo médio que cada unidade segura um processo">
+              <BarChart items={m.gargalos.map((g) => ({ label: g.unit, count: g.mediaDias }))} unit=" dias" color="var(--warn-bar)"
+                vazio="Precisa das datas de andamento: na barra lateral, abra um processo → aba Tramitação → “Buscar datas do andamento”." />
+            </Card>
+
+            <Card title="Risco dos processos" subtitle="Pela nota da auditoria">
               <Donut slices={m.riskDist} />
             </Card>
 
-            <Card title="Gargalos por unidade" subtitle="tempo médio que processos passam em cada unidade">
-              <BarChart items={m.gargalos.map((g) => ({ label: g.unit, count: g.mediaDias }))} unit="d" color="#C2410C" />
-            </Card>
-
-            <Card title="Processos por tipo">
+            <Card title="Por tipo de processo">
               <BarChart items={m.tipoDist} color="var(--p)" />
             </Card>
 
             <Card title="Por situação">
-              <BarChart items={m.statusDist} color="#0EA5E9" />
+              <BarChart items={m.statusDist} color="var(--accent)" />
             </Card>
           </div>
-
-          {/* Atenção */}
-          <Card title="Precisam de atenção" subtitle="ordenado por risco e tempo parado">
-            <table className="dash-table">
-              <thead>
-                <tr><th>Processo</th><th>Tipo</th><th>Risco</th><th>Situação</th><th>Parado</th></tr>
-              </thead>
-              <tbody>
-                {m.atencao.map((a) => {
-                  const rb = RISK_BADGE[a.risk] ?? RISK_BADGE.nao;
-                  return (
-                    <tr key={a.id}>
-                      <td className="dt-id">{a.id}</td>
-                      <td className="dt-type">{a.type ?? "—"}</td>
-                      <td><span className={`rb ${rb.cls}`}>{rb.label}{a.score !== null ? ` · ${a.score}` : ""}</span></td>
-                      <td>{a.statusLabel}</td>
-                      <td className={a.diasParado !== null && a.diasParado > 30 ? "dt-alert" : ""}>
-                        {a.diasParado !== null ? `${a.diasParado}d` : "—"}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </Card>
         </>
       )}
     </div>
