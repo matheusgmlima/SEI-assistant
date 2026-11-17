@@ -6,6 +6,7 @@ import type {
 import { deriveStatus, extractImportantDocs, cleanDocTitle } from "@shared/index";
 import { MODELOS, MODELO_PADRAO, LITELLM_URL, normalizarConfig, configLegada, type AiConfig } from "@shared/agents/llm";
 import { RevisaoPanel, ControladorScreen } from "./Revisao";
+import { Icon, ScreenHeader, type NomeIcone } from "./ui";
 
 // ─── Tipos de view ──────────────────────────────────────────────────────────────
 type View = "main" | "processes" | "processDetail" | "settings" | "controlador";
@@ -580,9 +581,10 @@ function useQa(processId: string | null) {
 function useAiConfig() {
   const [config, setConfig] = useState<AiConfig | null>(null);
   const [legada, setLegada] = useState(false);
+  const [pronto, setPronto] = useState(false); // config null = "sem chave" só depois de ler o storage
 
   useEffect(() => {
-    chrome.storage.local.get("aiConfig", (r) => { setConfig(normalizarConfig(r.aiConfig)); setLegada(configLegada(r.aiConfig)); });
+    chrome.storage.local.get("aiConfig", (r) => { setConfig(normalizarConfig(r.aiConfig)); setLegada(configLegada(r.aiConfig)); setPronto(true); });
   }, []);
 
   function save(cfg: AiConfig) {
@@ -590,7 +592,17 @@ function useAiConfig() {
     setConfig(cfg);
   }
 
-  return { config, legada, save };
+  return { config, legada, pronto, save };
+}
+
+/** "agora", "há 5 min", "há 3 h", "há 2 dias". */
+function atras(ms: number): string {
+  const s = Math.floor((Date.now() - ms) / 1000);
+  if (s < 60) return "agora";
+  if (s < 3600) return `há ${Math.floor(s / 60)} min`;
+  if (s < 86400) return `há ${Math.floor(s / 3600)} h`;
+  const d = Math.floor(s / 86400);
+  return `há ${d} dia${d > 1 ? "s" : ""}`;
 }
 
 // ─── Componentes ────────────────────────────────────────────────────────────────
@@ -604,17 +616,18 @@ function IdleScreen() {
           <path d="M13 20h14M20 13v14" stroke="var(--color-primary)" strokeWidth="2" strokeLinecap="round"/>
         </svg>
       </div>
-      <p className="idle-title">Aguardando login</p>
-      <p className="idle-desc">Faça login no SEI para ativar o assistente.</p>
-      <p className="idle-hint">Já está logado? Recarregue a página do SEI.</p>
+      <p className="idle-title">Entre no SEI para começar</p>
+      <p className="idle-desc">O assistente funciona junto com o SEI do TJPE: faça login em sei.cloud.tjpe.jus.br nesta janela.</p>
+      <p className="idle-hint">Já entrou? Recarregue a página do SEI (F5).</p>
     </div>
   );
 }
 
 // ── Tela: Configurações ─────────────────────────────────────────────────────────
-function SettingsScreen({ onBack }: { onBack: () => void }) {
+function SettingsScreen({ onBack, onControlador }: { onBack: () => void; onControlador: () => void }) {
   const { config, legada, save } = useAiConfig();
   const [apiKey, setApiKey] = useState("");
+  const [ver, setVer] = useState(false);
   const [model, setModel] = useState(MODELO_PADRAO);
   const [saved, setSaved] = useState(false);
   const [dev, setDev] = useState(false);
@@ -628,48 +641,55 @@ function SettingsScreen({ onBack }: { onBack: () => void }) {
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }
+  const conectado = !!config?.apiKey && !legada;
 
   return (
     <div className="screen screen--active">
-      <header className="screen-header">
-        <button className="btn-back" onClick={onBack}>‹</button>
-        <span className="screen-title">Configurações IA</span>
-      </header>
+      <ScreenHeader title="Configurações" onBack={onBack} />
 
       <div className="settings-body">
-        {legada && (
-          <p className="settings-hint">⚠ A chave salva era de outro provedor (Groq/OpenAI). Cole a chave do LiteLLM do TJPE.</p>
-        )}
-        <label className="settings-label">Chave do LiteLLM TJPE</label>
-        <input
-          className="settings-input"
-          type="password"
-          placeholder="sk-..."
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-        />
+        <section className="set-card">
+          <div className="set-card-head">
+            <span className="set-card-title"><Icon n="chave" /> Conexão com a IA</span>
+            <span className={`pill ${conectado ? "pill--ok" : "pill--warn"}`}>{conectado ? "Configurada" : "Pendente"}</span>
+          </div>
+          <p className="set-help">Resumo, auditoria, perguntas e revisão usam a IA do tribunal. Cole aqui a sua chave de acesso — ela fica salva só neste navegador.</p>
+          {legada && <p className="aviso aviso--warn"><Icon n="alerta" /> A chave salva era de outro serviço (Groq/OpenAI). Cole a chave do LiteLLM do TJPE.</p>}
+          <label className="settings-label" htmlFor="set-key">Chave de acesso</label>
+          <div className="set-key">
+            <input id="set-key" className="settings-input" type={ver ? "text" : "password"} placeholder="sk-…" autoComplete="off" spellCheck={false}
+              value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+            <button type="button" className="btn-icon btn-icon--soft" onClick={() => setVer((v) => !v)} aria-label={ver ? "Esconder chave" : "Mostrar chave"} title={ver ? "Esconder" : "Mostrar"}>
+              <Icon n={ver ? "olhoOff" : "olho"} />
+            </button>
+          </div>
+          <p className="set-help set-help--small">Não tem? Gere em <strong>litellm.cloud.tjpe.jus.br</strong> ou peça à equipe responsável.</p>
+          <button className="btn btn--primary btn--block" onClick={handleSave} disabled={!apiKey.trim()}>
+            {saved ? <><Icon n="ok" /> Salvo</> : "Salvar"}
+          </button>
+        </section>
 
-        <label className="settings-label">Modelo (resumo, auditoria e perguntas)</label>
-        <select className="settings-select" value={model} onChange={(e) => setModel(e.target.value)}>
-          {MODELOS.map((m) => <option key={m.id} value={m.id}>{m.nome}</option>)}
-        </select>
+        <details className="set-card set-avancado">
+          <summary><Icon n="ajustes" /> Opções avançadas</summary>
+          <label className="settings-label" htmlFor="set-modelo">Modelo do resumo, auditoria e perguntas</label>
+          <select id="set-modelo" className="settings-select" value={model} onChange={(e) => setModel(e.target.value)}>
+            {MODELOS.map((m) => <option key={m.id} value={m.id}>{m.nome}</option>)}
+          </select>
+          <p className="set-help set-help--small">Os agentes de revisão escolhem o modelo sozinhos. Mudou o modelo? Clique em Salvar acima.</p>
 
-        <label className="settings-check">
-          <input type="checkbox" checked={dev} onChange={(e) => { setDev(e.target.checked); chrome.storage.local.set({ modoDev: e.target.checked }); }} />
-          <span>Modo desenvolvedor — mostra as estatísticas de evolução e custo dos agentes no menu.</span>
-        </label>
-
-        <button className="btn-save" onClick={handleSave} disabled={!apiKey.trim()}>
-          {saved ? "✓ Salvo!" : "Salvar"}
-        </button>
-
-        <p className="settings-hint">
-          Chave criada em <strong>litellm.cloud.tjpe.jus.br</strong>. Os agentes de revisão escolhem o modelo sozinhos (Pro só no revisor de português e no comparador; Flash nos demais) e o controlador usa Claude Opus.
-        </p>
+          <button className="set-link" onClick={onControlador}>
+            <span><b>Controlador dos agentes</b><small>Ajustes automáticos feitos a partir das avaliações</small></span><Icon n="seguir" />
+          </button>
+          <label className="settings-check">
+            <input type="checkbox" checked={dev} onChange={(e) => { setDev(e.target.checked); chrome.storage.local.set({ modoDev: e.target.checked }); }} />
+            <span>Modo desenvolvedor — mostra as estatísticas de evolução e custo dos agentes na tela inicial.</span>
+          </label>
+        </details>
       </div>
     </div>
   );
 }
+
 
 // ── Componente: Progress Bar de Coleta ─────────────────────────────────────────
 function CollectionProgressBar({
@@ -678,59 +698,64 @@ function CollectionProgressBar({
   onStop,
   onReset,
   hasData,
+  timeAgo,
 }: {
   progress: CollectionProgress | null;
   onStart: () => void;
   onStop: () => void;
   onReset: () => void;
   hasData: boolean;
+  timeAgo?: string | null;
 }) {
-  if (!progress || progress.status === "done") {
+  if (progress?.status === "running") {
+    const pct = Math.round((progress.step / progress.totalSteps) * 100);
+    const elapsed = Math.round((Date.now() - progress.startedAt) / 1000);
     return (
-      <div className="collect-bar">
-        {progress?.status === "done" && (
-          <div className="collect-done">✓ Dados coletados com sucesso!</div>
-        )}
-        <button className="btn-collect" onClick={onStart}>
-          {hasData ? "↺ Atualizar dados do processo" : "⚡ Coletar dados do processo"}
-        </button>
-        {progress?.status === "done" && (
-          <button className="btn-collect-reset" onClick={onReset}>Limpar</button>
-        )}
+      <div className="collect-bar collect-bar--running" role="status">
+        <div className="collect-phase">
+          <span className="collect-spinner" />
+          <span>{progress.phase}</span>
+        </div>
+        <div className="collect-progress-track">
+          <div className="collect-progress-fill" style={{ width: `${pct}%` }} />
+        </div>
+        <div className="collect-meta">
+          <span>Etapa {progress.step} de {progress.totalSteps} · {elapsed}s</span>
+          <button className="btn-link btn-link--danger" onClick={onStop}>Parar</button>
+        </div>
       </div>
     );
   }
 
-  if (progress.status === "error") {
+  if (progress?.status === "error") {
     return (
       <div className="collect-bar">
-        <div className="collect-error">✗ {progress.phase}</div>
-        <button className="btn-collect" onClick={onStart}>Tentar novamente</button>
-        <button className="btn-collect-reset" onClick={onReset}>Limpar</button>
+        <p className="aviso aviso--erro"><Icon n="alerta" /> {progress.phase}</p>
+        <div className="row">
+          <button className="btn btn--primary" onClick={onStart}>Tentar novamente</button>
+          <button className="btn btn--ghost" onClick={onReset}>Fechar</button>
+        </div>
       </div>
     );
   }
 
-  // Running
-  const pct = Math.round((progress.step / progress.totalSteps) * 100);
-  const elapsed = Math.round((Date.now() - progress.startedAt) / 1000);
+  // Ainda sem dados: o primeiro passo fica bem explicado
+  if (!hasData) {
+    return (
+      <div className="collect-bar collect-bar--first">
+        <p className="collect-first-title">Primeiro passo: ler o processo</p>
+        <p className="collect-first-desc">A extensão abre a árvore do processo no SEI e lê os despachos e o andamento. Leva cerca de 1 minuto — não feche a aba do SEI.</p>
+        <button className="btn btn--primary btn--block" onClick={onStart}><Icon n="play" s={14} /> Ler o processo</button>
+      </div>
+    );
+  }
 
   return (
-    <div className="collect-bar collect-bar--running">
-      <div className="collect-phase">
-        <span className="collect-spinner" />
-        <span>{progress.phase}</span>
-      </div>
-      <div className="collect-progress-track">
-        <div className="collect-progress-fill" style={{ width: `${pct}%` }} />
-      </div>
-      <div className="collect-meta">
-        <span>Passo {progress.step}/{progress.totalSteps}</span>
-        <span>{elapsed}s</span>
-      </div>
-      <button className="btn-collect-stop" onClick={onStop} title="Cancelar coleta">
-        ✕ Parar coleta
-      </button>
+    <div className="collect-line">
+      <span className="collect-line-txt">
+        {progress?.status === "done" ? <><Icon n="ok" s={14} className="txt-ok" /> Dados atualizados agora</> : <>Dados lidos {timeAgo ?? ""}</>}
+      </span>
+      <button className="btn-link" onClick={onStart}><Icon n="atualizar" s={13} /> Ler de novo</button>
     </div>
   );
 }
@@ -898,13 +923,13 @@ function AuditPanel({
           Verifica documentos obrigatórios, prazos, sequência dos atos e aponta riscos com recomendações.
         </p>
         {!hasData && (
-          <p className="audit-empty-hint">Colete os dados do processo primeiro para uma análise completa.</p>
+          <p className="audit-empty-hint">Leia o processo primeiro (botão acima) para uma análise completa.</p>
         )}
         {!hasApiKey && (
           <p className="audit-empty-hint">Sem chave de IA: a auditoria roda só com as verificações automáticas (checklist + regras).</p>
         )}
         {error && <div className="summary-error summary-error--inline"><p>{error}</p></div>}
-        <button className="btn-summarize" onClick={onRun}>🛡️ Auditar processo</button>
+        <button className="btn btn--primary btn--block" onClick={onRun}><Icon n="escudo" s={15} /> Auditar processo</button>
       </div>
     );
   }
@@ -933,7 +958,7 @@ function AuditPanel({
         </div>
         <div className="audit-score-info">
           <span className={`audit-risk-badge ${risk.cls}`}>{risk.label}</span>
-          {audit.stageLabel && <span className="audit-stage">📍 {audit.stageLabel}</span>}
+          {audit.stageLabel && <span className="audit-stage">Fase: {audit.stageLabel}</span>}
           <span className="audit-findings-count">
             {presentes}/{totalCheck} documentos · {ruleFindings.length} {ruleFindings.length === 1 ? "achado" : "achados"}
           </span>
@@ -1016,7 +1041,7 @@ function AuditPanel({
 
       <div className="audit-footer">
         <span>Gerado em {genStr}</span>
-        <button className="btn-collect-reset" onClick={onRun}>↺ Reauditar</button>
+        <button className="btn-link" onClick={onRun}><Icon n="atualizar" s={13} /> Auditar de novo</button>
       </div>
     </div>
   );
@@ -1028,7 +1053,7 @@ function AuditFindingCard({ finding }: { finding: AuditFinding }) {
   return (
     <div className={`audit-finding ${meta.cls}`}>
       <button className="audit-finding-head" onClick={() => setOpen((o) => !o)}>
-        <span className="audit-finding-sev">{meta.icon}</span>
+        <span className="audit-finding-sev" aria-label={meta.label} />
         <span className="audit-finding-title">{finding.title}</span>
         <span className="audit-finding-cat">{CATEGORY_LABEL[finding.category] ?? finding.category}</span>
         <span className="audit-finding-chevron">{open ? "▾" : "▸"}</span>
@@ -1042,7 +1067,7 @@ function AuditFindingCard({ finding }: { finding: AuditFinding }) {
             </p>
           )}
           <span className={`audit-finding-source audit-finding-source--${finding.source}`}>
-            {finding.source === "ia" ? "🤖 IA" : "⚙ Regra automática"}
+            {finding.source === "ia" ? "Análise da IA" : "Regra automática"}
           </span>
         </div>
       )}
@@ -1089,7 +1114,7 @@ function QaPanel({
   if (!hasApiKey) {
     return (
       <div className="qa-empty">
-        <p className="qa-empty-title">💬 Pergunte ao processo</p>
+        <p className="qa-empty-title">Pergunte ao processo</p>
         <p className="qa-empty-desc">Configure uma chave de IA para conversar sobre o conteúdo do processo.</p>
         <button className="btn-config-link" onClick={onSettings}>Configurar agora →</button>
       </div>
@@ -1104,7 +1129,7 @@ function QaPanel({
             <p className="qa-intro-text">
               {hasData
                 ? "Pergunte qualquer coisa sobre este processo. As respostas usam os documentos e o histórico coletados."
-                : "Colete os dados do processo primeiro para respostas completas. Você ainda pode perguntar, mas a IA terá pouco contexto."}
+                : "Leia o processo primeiro (botão acima) para respostas completas. Dá para perguntar mesmo assim, mas a IA terá pouco contexto."}
             </p>
             <div className="qa-suggestions">
               {QA_SUGGESTIONS.map((s, i) => (
@@ -1133,7 +1158,7 @@ function QaPanel({
 
       <div className="qa-inputbar">
         {messages.length > 0 && (
-          <button className="qa-clear" onClick={clear} title="Limpar conversa">🗑</button>
+          <button className="qa-clear" onClick={clear} title="Limpar conversa" aria-label="Limpar conversa"><Icon n="lixo" s={15} /></button>
         )}
         <textarea
           className="qa-input"
@@ -1146,7 +1171,7 @@ function QaPanel({
           }}
           disabled={loading}
         />
-        <button className="qa-send" onClick={() => send()} disabled={loading || !input.trim()}>→</button>
+        <button className="qa-send" onClick={() => send()} disabled={loading || !input.trim()} aria-label="Enviar pergunta"><Icon n="enviar" s={15} /></button>
       </div>
     </div>
   );
@@ -1197,6 +1222,14 @@ function renderSummary(text: string) {
 
   return <>{out}</>;
 }
+
+const DETAIL_TABS: { id: DetailTab; label: string; icon: NomeIcone }[] = [
+  { id: "resumo", label: "Resumo", icon: "resumo" },
+  { id: "tramitacao", label: "Tramitação", icon: "caminho" },
+  { id: "auditoria", label: "Auditoria", icon: "escudo" },
+  { id: "perguntar", label: "Perguntar", icon: "conversa" },
+  { id: "revisao", label: "Revisar", icon: "revisar" },
+];
 
 // ── Tela: Detalhe do processo ───────────────────────────────────────────────────
 // Hook: alerta de movimentação (flag moved_${id} gravada pelo content script
@@ -1286,11 +1319,6 @@ function ProcessDetailScreen({
     );
   }
 
-  useEffect(() => {
-    if (details?.summary && summaryRef.current) {
-      summaryRef.current.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [details?.summary]);
 
   function expandTree() {
     setExpanding(true);
@@ -1310,61 +1338,43 @@ function ProcessDetailScreen({
     chrome.tabs.create({ url });
   }
 
-  const timeAgo = details?.extractedAt
-    ? (() => {
-        const d = Math.floor((Date.now() - details.extractedAt) / 1000);
-        if (d < 60) return `${d}s atrás`;
-        if (d < 3600) return `${Math.floor(d / 60)}min atrás`;
-        return `${Math.floor(d / 3600)}h atrás`;
-      })()
-    : null;
+  const timeAgo = details?.extractedAt ? atras(details.extractedAt) : null;
 
   return (
     <div className="screen screen--active detail-screen">
-      <header className="screen-header">
-        <button className="btn-back" onClick={onBack}>‹</button>
-        <span className="screen-title" title={processId}>{processId}</span>
+      <ScreenHeader title={processId} sub={details?.type} onBack={onBack}>
         {details && (
-          <button
-            className="btn-refresh"
-            title="Exportar dossiê (PDF / Word)"
-            onClick={exportDossie}
-          >
-            📥
+          <button className="btn-refresh" title="Exportar dossiê (PDF / Word)" aria-label="Exportar dossiê" onClick={exportDossie}>
+            <Icon n="baixar" s={17} />
           </button>
         )}
-        <button
-          className="btn-refresh"
-          title="Expandir todas as pastas da árvore"
-          onClick={expandTree}
-          disabled={expanding}
-        >
-          {expanding ? "⏳" : "📂"}
+        <button className="btn-refresh" title="Expandir todas as pastas da árvore no SEI" aria-label="Expandir pastas da árvore" onClick={expandTree} disabled={expanding}>
+          {expanding ? <span className="collect-spinner collect-spinner--light" /> : <Icon n="pasta" s={17} />}
         </button>
-      </header>
+      </ScreenHeader>
 
       {!details && (
         <div className="detail-waiting">
-          <p className="detail-waiting-title">Aguardando dados…</p>
+          <Icon n="doc" s={28} />
+          <p className="detail-waiting-title">Ainda não li este processo</p>
           <p className="detail-waiting-desc">
-            Abra o processo <strong>{processId}</strong> no SEI para carregar as informações.
+            Clique abaixo e a extensão abre o processo <strong>{processId}</strong> no SEI e lê os documentos sozinha.
           </p>
+          <CollectionProgressBar progress={collectProgress} onStart={startCollection} onStop={stopCollection} onReset={resetCollection} hasData={false} />
         </div>
       )}
 
       {details && (
         <div className="detail-body">
-          {timeAgo && <p className="processes-meta">Dados coletados {timeAgo}</p>}
-
           {/* Alerta de movimentação desde a última coleta */}
           {moved && (
             <div className="moved-banner">
               <span className="moved-text">
-                🔔 <b>{moved.count} novidade{moved.count > 1 ? "s" : ""}</b> neste processo desde a última coleta — o resumo pode estar desatualizado.
+                <Icon n="sino" s={14} /> <span><b>{moved.count} novidade{moved.count > 1 ? "s" : ""}</b> no SEI desde a última leitura — o resumo pode estar desatualizado.</span>
               </span>
               <span className="moved-actions">
-                <button className="moved-btn" onClick={startCollection}>↺ Recoletar</button>
-                <button className="moved-dismiss" onClick={dismissMoved} title="Dispensar aviso">✕</button>
+                <button className="moved-btn" onClick={startCollection}>Ler de novo</button>
+                <button className="moved-dismiss" onClick={dismissMoved} aria-label="Dispensar aviso" title="Dispensar aviso"><Icon n="fechar" s={12} /></button>
               </span>
             </div>
           )}
@@ -1376,33 +1386,19 @@ function ProcessDetailScreen({
             onStop={stopCollection}
             onReset={resetCollection}
             hasData={hasData}
+            timeAgo={timeAgo}
           />
 
           {/* Abas */}
-          <div className="detail-tabs">
-            <button
-              className={`detail-tab ${tab === "resumo" ? "detail-tab--active" : ""}`}
-              onClick={() => setTab("resumo")}
-            >Resumo</button>
-            <button
-              className={`detail-tab ${tab === "tramitacao" ? "detail-tab--active" : ""}`}
-              onClick={() => setTab("tramitacao")}
-            >Tramitação</button>
-            <button
-              className={`detail-tab ${tab === "auditoria" ? "detail-tab--active" : ""}`}
-              onClick={() => setTab("auditoria")}
-            >
-              Auditoria
-              {audit && <span className={`detail-tab-dot ${RISK_META[audit.riskLevel].cls}`} />}
-            </button>
-            <button
-              className={`detail-tab ${tab === "perguntar" ? "detail-tab--active" : ""}`}
-              onClick={() => setTab("perguntar")}
-            >Perguntar</button>
-            <button
-              className={`detail-tab ${tab === "revisao" ? "detail-tab--active" : ""}`}
-              onClick={() => setTab("revisao")}
-            >Revisão</button>
+          <div className="detail-tabs" role="tablist">
+            {DETAIL_TABS.map((t) => (
+              <button key={t.id} role="tab" aria-selected={tab === t.id} aria-label={t.label}
+                className={`detail-tab ${tab === t.id ? "detail-tab--active" : ""}`} onClick={() => setTab(t.id)}>
+                <Icon n={t.icon} s={15} />
+                <span>{t.label}</span>
+                {t.id === "auditoria" && audit && <span className={`detail-tab-dot ${RISK_META[audit.riskLevel].cls}`} />}
+              </button>
+            ))}
           </div>
 
           {/* Aba: Revisão por agentes */}
@@ -1441,7 +1437,7 @@ function ProcessDetailScreen({
                   onClick={generateTramitacao}
                   disabled={generatingTram}
                 >
-                  {generatingTram ? "⏳ Aguardando SEI…" : "🤖 Gerar Tramitação"}
+                  {generatingTram ? "Aguardando o SEI…" : <><Icon n="caminho" s={15} /> Montar tramitação</>}
                 </button>
               </div>
               {waitingForSei && (
@@ -1461,14 +1457,58 @@ function ProcessDetailScreen({
 
           {/* Aba: Resumo — conteúdo original */}
           {tab === "resumo" && <>
+          {/* Resumo IA */}
+          <div className="detail-section" ref={summaryRef}>
+            <p className="detail-section-title">Resumo com IA</p>
+
+            {!hasApiKey && (
+              <div className="summary-no-key">
+                <p>Falta configurar a chave da IA.</p>
+                <button className="btn-config-link" onClick={onSettings}>
+                  Configurar agora →
+                </button>
+              </div>
+            )}
+
+            {hasApiKey && !details.summary && !summarizing && (
+              <button className="btn btn--primary btn--block" onClick={generateSummary}>
+                <Icon n="resumo" s={15} /> Gerar resumo
+              </button>
+            )}
+
+            {summarizing && (
+              <div className="summary-loading"><span className="collect-spinner" /> Gerando resumo… (cerca de 20 s)</div>
+            )}
+
+            {summaryError && (
+              <div className="summary-error">
+                <p>{summaryError}</p>
+                <button className="btn-summarize btn-summarize--retry" onClick={generateSummary}>
+                  Tentar novamente
+                </button>
+              </div>
+            )}
+
+            {details.summary && !summarizing && (
+              <div className="summary-content">
+                {renderSummary(details.summary)}
+                <button className="btn-summarize btn-summarize--retry" onClick={generateSummary}>
+                  <Icon n="atualizar" s={13} /> Gerar de novo
+                </button>
+              </div>
+            )}
+          </div>
+
 
           {/* Metadados */}
+          <div className="detail-meta">
           {details.type && <div className="detail-field"><span className="detail-key">Tipo</span><span className="detail-val">{details.type}</span></div>}
           {details.description && <div className="detail-field"><span className="detail-key">Especificação</span><span className="detail-val">{details.description}</span></div>}
           {details.currentUnit && <div className="detail-field"><span className="detail-key">Unidade</span><span className="detail-val">{details.currentUnit}</span></div>}
           {details.parties.length > 0 && (
             <div className="detail-field"><span className="detail-key">Interessados</span><span className="detail-val">{details.parties.join(", ")}</span></div>
           )}
+          </div>
 
           {/* Andamento */}
           {details.andamento.length > 0 && (
@@ -1490,7 +1530,7 @@ function ProcessDetailScreen({
             if (keyDocs.length === 0) return null;
             return (
               <div className="detail-section">
-                <p className="detail-section-title">📎 Documentos-chave ({keyDocs.length})</p>
+                <p className="detail-section-title">Documentos-chave ({keyDocs.length})</p>
                 <ul className="keydoc-list">
                   {keyDocs.slice(0, 10).map((d, i) => (
                     <li key={i} className={`keydoc ${d.priority === 1 ? "keydoc--top" : ""}`}>
@@ -1536,53 +1576,11 @@ function ProcessDetailScreen({
             return (
               <div className={`read-status ${ok ? "read-status--ok" : "read-status--warn"}`}>
                 {ok
-                  ? `📄 ${nDocs} documento(s) lido(s) · ${(chars / 1000).toFixed(1)} mil caracteres de conteúdo`
-                  : "⚠ Pouco ou nenhum conteúdo de documento lido — abra os despachos no SEI ou recolha o processo."}
+                  ? `${nDocs} documento(s) lido(s) · ${(chars / 1000).toFixed(1)} mil caracteres`
+                  : "Pouco conteúdo de documento lido — clique em “Ler de novo” ou abra os despachos no SEI."}
               </div>
             );
           })()}
-
-          {/* Resumo IA */}
-          <div className="detail-section" ref={summaryRef}>
-            <p className="detail-section-title">Resumo com IA</p>
-
-            {!hasApiKey && (
-              <div className="summary-no-key">
-                <p>Nenhuma API key configurada.</p>
-                <button className="btn-config-link" onClick={onSettings}>
-                  Configurar agora →
-                </button>
-              </div>
-            )}
-
-            {hasApiKey && !details.summary && !summarizing && (
-              <button className="btn-summarize" onClick={generateSummary}>
-                ✨ Gerar resumo
-              </button>
-            )}
-
-            {summarizing && (
-              <div className="summary-loading">Gerando resumo…</div>
-            )}
-
-            {summaryError && (
-              <div className="summary-error">
-                <p>{summaryError}</p>
-                <button className="btn-summarize btn-summarize--retry" onClick={generateSummary}>
-                  Tentar novamente
-                </button>
-              </div>
-            )}
-
-            {details.summary && !summarizing && (
-              <div className="summary-content">
-                {renderSummary(details.summary)}
-                <button className="btn-summarize btn-summarize--retry" onClick={generateSummary}>
-                  ↺ Regenerar
-                </button>
-              </div>
-            )}
-          </div>
 
           </> /* fim aba resumo */}
         </div>
@@ -1675,14 +1673,7 @@ function ProcessListScreen({
     return sorted;
   }, [items, query, riskFilter, sortKey]);
 
-  const timeAgo = collectedAt
-    ? (() => {
-        const d = Math.floor((Date.now() - collectedAt) / 1000);
-        if (d < 60) return `${d}s atrás`;
-        if (d < 3600) return `${Math.floor(d / 60)}min atrás`;
-        return `${Math.floor(d / 3600)}h atrás`;
-      })()
-    : null;
+  const timeAgo = collectedAt ? atras(collectedAt) : null;
 
   function toggleFilter(f: RiskFilter) {
     setRiskFilter((cur) => (cur === f ? null : f));
@@ -1708,7 +1699,7 @@ function ProcessListScreen({
     const ids = visible.filter((p) => selected.has(p.id)).map((p) => p.id);
     const ok = await startQueue(ids);
     if (!ok) {
-      setQueueError("Abra o SEI na aba ativa para iniciar a fila de coleta.");
+      setQueueError("Abra o SEI na aba ativa para começar a leitura.");
       return;
     }
     cancelSelecting();
@@ -1716,23 +1707,19 @@ function ProcessListScreen({
 
   return (
     <div className="screen screen--active">
-      <header className="screen-header">
-        <button className="btn-back" onClick={onBack}>‹</button>
-        <span className="screen-title">Meus Processos</span>
+      <ScreenHeader title="Meus processos" sub={items.length ? `${items.length} na unidade` : null} onBack={onBack}>
         {items.length > 0 && !queueRunning && (
-          <button
-            className="btn-refresh"
-            title={selecting ? "Cancelar seleção" : "Selecionar processos para coletar em lote"}
-            onClick={() => (selecting ? cancelSelecting() : setSelecting(true))}
-          >
-            {selecting ? "✕" : "☑"}
+          <button className={`btn-refresh btn-refresh--txt ${selecting ? "is-on" : ""}`}
+            title={selecting ? "Cancelar seleção" : "Escolher vários processos para ler de uma vez"}
+            onClick={() => (selecting ? cancelSelecting() : setSelecting(true))}>
+            {selecting ? <><Icon n="fechar" s={14} /> Cancelar</> : <><Icon n="selecionar" s={14} /> Ler vários</>}
           </button>
         )}
-        <button className="btn-refresh" onClick={collect} disabled={loading}
-          title="Abra 'Controle de Processos' no SEI antes de atualizar">
-          {loading ? "…" : "↻"}
+        <button className="btn-refresh" onClick={collect} disabled={loading} aria-label="Atualizar lista"
+          title="Atualizar a lista (abra o Controle de Processos no SEI)">
+          {loading ? <span className="collect-spinner collect-spinner--light" /> : <Icon n="atualizar" s={16} />}
         </button>
-      </header>
+      </ScreenHeader>
 
       {/* Banner da fila em lote */}
       {queue && (
@@ -1741,7 +1728,7 @@ function ProcessListScreen({
 
       {notOnPage && (
         <div className="processes-hint">
-          Abra <strong>Controle de Processos</strong> no SEI e clique em ↻
+          <Icon n="alerta" s={14} /> <span>Para atualizar a lista, abra o <strong>Controle de Processos</strong> no SEI e clique em atualizar.</span>
         </div>
       )}
 
@@ -1749,8 +1736,9 @@ function ProcessListScreen({
 
       {!loading && !notOnPage && items.length === 0 && (
         <div className="processes-empty">
-          Nenhum processo encontrado.<br />
-          Navegue até "Controle de Processos" no SEI.
+          <Icon n="lista" s={26} />
+          <p><b>Nenhum processo ainda</b></p>
+          <p>Abra o <strong>Controle de Processos</strong> no SEI — a lista é lida de lá automaticamente.</p>
         </div>
       )}
 
@@ -1774,11 +1762,11 @@ function ProcessListScreen({
           <div className="portfolio-controls">
             <input
               className="portfolio-search"
-              placeholder="Buscar nº, tipo ou objeto…"
+              placeholder="Buscar por número, tipo ou objeto" aria-label="Buscar processo"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
-            <select className="portfolio-sort" value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)}>
+            <select className="portfolio-sort" aria-label="Ordenar" value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)}>
               <option value="risco">Risco</option>
               <option value="parado">Mais parados</option>
               <option value="numero">Ordem original</option>
@@ -1799,13 +1787,13 @@ function ProcessListScreen({
                 disabled={selected.size === 0 || queueRunning}
                 onClick={gerarDados}
               >
-                ⚡ Gerar dados ({selected.size})
+                Ler {selected.size} processo{selected.size === 1 ? "" : "s"}
               </button>
             </div>
           )}
           {queueError && <div className="summary-error summary-error--inline" style={{ margin: "0 12px 8px" }}><p>{queueError}</p></div>}
 
-          {timeAgo && !selecting && <p className="processes-meta">Atualizado {timeAgo} · {visible.length} de {items.length}</p>}
+          {timeAgo && !selecting && <p className="processes-meta">Lista atualizada {timeAgo} · mostrando {visible.length} de {items.length}</p>}
 
           <div className="process-list">
             {visible.map((p) => (
@@ -1839,7 +1827,7 @@ function QueueBanner({ queue, onStop, onDismiss }: {
     return (
       <div className="queue-banner queue-banner--done">
         <div className="queue-banner-row">
-          <span>✓ Fila concluída — {queue.done.length} coletado(s){queue.failed.length > 0 ? `, ${queue.failed.length} falha(s)` : ""}</span>
+          <span><Icon n="ok" s={14} /> Pronto — {queue.done.length} processo(s) lido(s){queue.failed.length > 0 ? `, ${queue.failed.length} falha(s)` : ""}</span>
           <button className="queue-dismiss" onClick={onDismiss}>Fechar</button>
         </div>
       </div>
@@ -1850,11 +1838,11 @@ function QueueBanner({ queue, onStop, onDismiss }: {
     <div className="queue-banner queue-banner--running">
       <div className="queue-banner-row">
         <span className="queue-banner-title">
-          <span className="collect-spinner" /> Coletando em lote — {processed + 1} de {queue.total}
+          <span className="collect-spinner" /> Lendo processos — {processed + 1} de {queue.total}
         </span>
         <button className="queue-stop" onClick={onStop}>Parar</button>
       </div>
-      {queue.current && <div className="queue-current">Processando {queue.current}</div>}
+      {queue.current && <div className="queue-current">{queue.current}</div>}
       <div className="collect-progress-track">
         <div className="collect-progress-fill" style={{ width: `${pct}%` }} />
       </div>
@@ -1906,8 +1894,8 @@ function PortfolioCard({ item, onClick, selecting = false, selected = false, isQ
           </span>
         )}
         <span className="process-id">{item.id}</span>
-        {hasMoved && <span className="process-moved-tag" title="Movimentou desde a última coleta">🔔</span>}
-        {isQueueCurrent && <span className="process-queue-tag">⏳ coletando</span>}
+        {hasMoved && <span className="process-moved-tag" title="Movimentou desde a última leitura"><Icon n="sino" s={13} /></span>}
+        {isQueueCurrent && <span className="process-queue-tag">lendo…</span>}
         <span className={`process-risk-badge ${riskCls}`}>
           {item.audit ? `${riskLabel} · ${item.audit.score}` : riskLabel}
         </span>
@@ -1924,24 +1912,44 @@ function PortfolioCard({ item, onClick, selecting = false, selected = false, isQ
         )}
         {parado && (
           <span className={`process-parado ${alertaParado ? "process-parado--alert" : ""}`}>
-            ⏱ {dias}d parado
+            <Icon n="relogio" s={12} /> {dias} dia{dias === 1 ? "" : "s"} parado
           </span>
         )}
         {!item.collected && item.lastUpdate && (
-          <span className="process-date">🕐 {item.lastUpdate}</span>
+          <span className="process-date">{item.lastUpdate}</span>
         )}
-        <span className="process-detail-hint">→</span>
+        <span className="process-detail-hint"><Icon n="seguir" s={15} /></span>
       </div>
     </button>
   );
 }
 
 // ── Tela: Principal ─────────────────────────────────────────────────────────────
+/** Processo aberto agora na aba do SEI (gravado pelo content script). */
+function useProcessoAberto() {
+  const [id, setId] = useState<string | null>(null);
+  const [info, setInfo] = useState<ProcessDetails | null>(null);
+  useEffect(() => {
+    chrome.storage.local.get("processoAberto", (r) => setId((r.processoAberto as string) ?? null));
+    const fn = (c: Record<string, chrome.storage.StorageChange>) => { if ("processoAberto" in c) setId((c.processoAberto.newValue as string) ?? null); };
+    chrome.storage.onChanged.addListener(fn);
+    return () => chrome.storage.onChanged.removeListener(fn);
+  }, []);
+  useEffect(() => {
+    if (!id) { setInfo(null); return; }
+    chrome.storage.local.get(`proc_${id}`, (r) => setInfo((r[`proc_${id}`] as ProcessDetails) ?? null));
+  }, [id]);
+  return { id, info };
+}
+
 function ActiveScreen({ session }: { session: SessionInfo }) {
   const [view, setView] = useState<View>("main");
   const [selectedProcess, setSelectedProcess] = useState<string | null>(null);
+  const [detailFrom, setDetailFrom] = useState<View>("processes");
   const [showTut, setShowTut] = useState(false);
   const [modoDev, setModoDev] = useState(false);
+  const { config, pronto: cfgPronto } = useAiConfig();
+  const aberto = useProcessoAberto();
   useEffect(() => {
     chrome.storage.local.get("modoDev", (r) => setModoDev(!!r.modoDev));
     const ouvir = (ch: Record<string, chrome.storage.StorageChange>) => { if (ch.modoDev) setModoDev(!!ch.modoDev.newValue); };
@@ -1957,15 +1965,16 @@ function ActiveScreen({ session }: { session: SessionInfo }) {
     setShowTut(false);
     chrome.storage.local.set({ sidebarTutorialSeen: true });
   }
+  function abrirProcesso(id: string, de: View) { setSelectedProcess(id); setDetailFrom(de); setView("processDetail"); }
 
-  if (view === "settings") return <SettingsScreen onBack={() => setView("main")} />;
-  if (view === "controlador") return <ControladorScreen onBack={() => setView("main")} />;
+  if (view === "settings") return <SettingsScreen onBack={() => setView("main")} onControlador={() => setView("controlador")} />;
+  if (view === "controlador") return <ControladorScreen onBack={() => setView("settings")} />;
 
   if (view === "processDetail" && selectedProcess) {
     return (
       <ProcessDetailScreen
         processId={selectedProcess}
-        onBack={() => setView("processes")}
+        onBack={() => setView(detailFrom)}
         onSettings={() => setView("settings")}
       />
     );
@@ -1975,84 +1984,102 @@ function ActiveScreen({ session }: { session: SessionInfo }) {
     return (
       <ProcessListScreen
         onBack={() => setView("main")}
-        onSelect={(id) => { setSelectedProcess(id); setView("processDetail"); }}
+        onSelect={(id) => abrirProcesso(id, "processes")}
       />
     );
   }
 
+  const semChave = cfgPronto && !config?.apiKey;
+  const u = session.username?.trim() ?? "";
+  const primeiroNome = /\s/.test(u) ? u.split(/\s+/)[0].toLowerCase().replace(/^./, (c) => c.toUpperCase()) : null; // login sem espaço não vira saudação
+
   return (
-    <div className="screen screen--active">
+    <div className="screen screen--active home">
       <header className="sidebar-header">
-        <div className="sidebar-logo">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+        <div className="sidebar-logo" aria-hidden="true">
+          <svg width="16" height="16" viewBox="0 0 14 14" fill="none">
             <path d="M7 1L13 4V10L7 13L1 10V4L7 1Z" stroke="white" strokeWidth="1.5"/>
+            <path d="M4.5 7.2l1.7 1.6L9.6 5.4" stroke="white" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
         </div>
         <div className="sidebar-header-text">
           <p className="sidebar-title">SEI Assistant</p>
-          <p className="sidebar-subtitle">TJPE</p>
+          <p className="sidebar-subtitle"><span className="status-dot" /> {session.unit ?? "Conectado ao SEI"}</p>
         </div>
-        <button className="btn-gear" onClick={() => setShowTut(true)} title="Como usar o SEI Assistant">❓</button>
-        <button className="btn-gear" onClick={() => setView("settings")} title="Configurações IA">⚙</button>
+        <button className="btn-gear" onClick={() => setShowTut(true)} aria-label="Como usar" title="Como usar"><Icon n="ajuda" s={18} /></button>
+        <button className="btn-gear" onClick={() => setView("settings")} aria-label="Configurações" title="Configurações"><Icon n="config" s={18} /></button>
       </header>
 
       {showTut && <SidebarTutorial onClose={closeTut} />}
 
-      <div className="status-badge">
-        <span className="status-dot"/>
-        <span>Sessão ativa</span>
+      <div className="home-body">
+        <p className="home-hello">{primeiroNome ? `Olá, ${primeiroNome}.` : "Olá."} O que vamos analisar?</p>
+
+        {semChave && (
+          <button className="aviso aviso--warn aviso--acao" onClick={() => setView("settings")}>
+            <Icon n="chave" /> <span><b>Falta a chave da IA.</b> Sem ela, resumo, auditoria e revisão não funcionam. Configurar agora</span> <Icon n="seguir" />
+          </button>
+        )}
+
+        {aberto.id ? (
+          <section className="aberto">
+            <p className="aberto-rot">Aberto no SEI agora</p>
+            <p className="aberto-id">{aberto.id}</p>
+            {aberto.info?.type && <p className="aberto-tipo">{aberto.info.type}</p>}
+            {aberto.info?.description && <p className="aberto-desc">{aberto.info.description}</p>}
+            <button className="btn btn--primary btn--block" onClick={() => abrirProcesso(aberto.id!, "main")}>
+              Analisar este processo <Icon n="seguir" s={14} />
+            </button>
+            <p className="aberto-dica">Resumo, tramitação, auditoria, perguntas e revisão dos documentos.</p>
+          </section>
+        ) : (
+          <section className="aberto aberto--vazio">
+            <Icon n="doc" s={22} />
+            <p><b>Abra um processo no SEI</b> e ele aparece aqui, pronto para analisar. Ou escolha na sua lista abaixo.</p>
+          </section>
+        )}
+
+        <nav className="actions" aria-label="Menu">
+          <ActionItem icon="lista" title="Meus processos" desc="Toda a unidade, ordenada por risco e tempo parado" onClick={() => setView("processes")}/>
+          <ActionItem icon="painel" title="Painel da unidade" desc="Gráficos de prazos e gargalos" external onClick={() => chrome.runtime.sendMessage({ type: "OPEN_DASHBOARD" })}/>
+          {modoDev && <ActionItem icon="grafico" title="Estatísticas dos agentes" desc="Precisão, evolução e custo (modo desenvolvedor)" external onClick={() => chrome.tabs.create({ url: chrome.runtime.getURL("dist/estatisticas.html") })}/>}
+        </nav>
       </div>
 
-      {(session.username || session.unit) && (
-        <div className="user-info">
-          {session.username && <p className="user-name">{session.username}</p>}
-          {session.unit && <p className="user-unit">{session.unit}</p>}
-        </div>
-      )}
-
-      <nav className="actions">
-        <p className="actions-label">Ações rápidas</p>
-        <ActionItem icon="📋" title="Meus processos" desc="Listar e resumir processos" onClick={() => setView("processes")}/>
-        <ActionItem icon="🧠" title="Controlador dos agentes" desc="Vereditos e melhoria dos prompts" onClick={() => setView("controlador")}/>
-        {modoDev && <ActionItem icon="📊" title="Estatísticas dos agentes" desc="Evolução, precisão e custo (dev)" onClick={() => chrome.tabs.create({ url: chrome.runtime.getURL("dist/estatisticas.html") })}/>}
-        <ActionItem icon="📈" title="Painel da unidade" desc="Métricas e gargalos" onClick={() => chrome.runtime.sendMessage({ type: "OPEN_DASHBOARD" })}/>
-      </nav>
-
       <footer className="sidebar-footer">
-        <button className="btn-dashboard" onClick={() => chrome.runtime.sendMessage({ type: "OPEN_DASHBOARD" })}>
-          Abrir dashboard →
-        </button>
+        <span>{session.username ?? "Sessão ativa"}</span>
+        <button className="btn-link" onClick={() => setShowTut(true)}>Como usar?</button>
       </footer>
     </div>
   );
 }
 
 // ── Tutorial de boas-vindas da sidebar ───────────────────────────────────────────
-const SIDEBAR_TUT_STEPS = [
+const SIDEBAR_TUT_STEPS: { icon: NomeIcone; title: string; body: string }[] = [
   {
-    icon: "👋",
+    icon: "doc",
     title: "Bem-vindo ao SEI Assistant",
-    body: "Ele lê os processos do SEI por você: resume com IA e audita a conformidade documental. Vamos ver o fluxo em 1 minuto.",
+    body: "Ele lê os processos do SEI por você: resume, mostra a tramitação, audita a conformidade e revisa os documentos. São 4 passos rápidos.",
   },
   {
-    icon: "⚡",
-    title: "1. Colete os dados",
-    body: "Abra um processo no SEI e clique em “Coletar dados do processo”. A extensão expande a árvore, lê os despachos e o andamento sozinha. Em “Meus processos” (☑) dá para coletar vários em lote.",
+    icon: "play",
+    title: "1. Abra o processo e leia",
+    body: "Abra um processo no SEI e clique em “Analisar este processo” aqui na lateral. Depois, “Ler o processo”: a extensão abre a árvore e lê despachos e andamento sozinha.",
   },
   {
-    icon: "🤖",
-    title: "2. Resumo e auditoria",
-    body: "Depois da coleta, as abas mostram o Resumo da IA (objeto, valor, vigência…), a Tramitação e a Auditoria — uma nota de conformidade que considera a fase atual do processo.",
+    icon: "resumo",
+    title: "2. Resumo, tramitação e auditoria",
+    body: "As abas mostram o resumo (objeto, valor, vigência…), por onde o processo passou e quanto tempo ficou em cada unidade, e uma nota de conformidade com o que falta.",
   },
   {
-    icon: "💬",
-    title: "3. Pergunte ao processo",
-    body: "Na aba “Perguntar”, faça perguntas em linguagem natural (“qual o valor estimado?”, “onde está parado?”) e a IA responde com base nos documentos coletados.",
+    icon: "revisar",
+    title: "3. Revise os documentos",
+    body: "Na aba “Revisar”, escolha os documentos (Termo de Referência, Edital, Minuta…). A IA aponta erros de português, conformidade e inconsistências e abre uma lista de correções.",
   },
   {
-    icon: "🔔",
-    title: "4. Fique de olho",
-    body: "Se um processo já coletado movimentar no SEI, aparece um alerta 🔔 avisando que o resumo pode estar desatualizado — um clique em “Recoletar” resolve. Para os recursos de IA, configure a chave em ⚙.",
+    icon: "ok",
+    title: "4. Avalie as correções",
+    body: "Em cada correção, marque “Já alterei” ou “Não é válida” (e diga o porquê). É assim que a revisão aprende e erra menos da próxima vez.",
   },
 ];
 
@@ -2072,11 +2099,11 @@ function SidebarTutorial({ onClose }: { onClose: () => void }) {
   }, [step, last, onClose]);
 
   return (
-    <div className="stut-overlay">
+    <div className="stut-overlay" role="dialog" aria-modal="true" aria-labelledby="stut-title">
       <div className="stut-card">
-        <button className="stut-close" onClick={onClose} title="Fechar (Esc)">✕</button>
-        <div className="stut-icon">{s.icon}</div>
-        <p className="stut-title">{s.title}</p>
+        <button className="stut-close" onClick={onClose} aria-label="Fechar"><Icon n="fechar" s={14} /></button>
+        <div className="stut-icon"><Icon n={s.icon} s={26} /></div>
+        <p className="stut-title" id="stut-title">{s.title}</p>
         <p className="stut-body">{s.body}</p>
         <div className="stut-dots">
           {SIDEBAR_TUT_STEPS.map((_, i) => (
@@ -2084,11 +2111,11 @@ function SidebarTutorial({ onClose }: { onClose: () => void }) {
           ))}
         </div>
         <div className="stut-nav">
-          <button className="stut-btn stut-btn--ghost" onClick={() => setStep((x) => x - 1)} disabled={step === 0}>← Voltar</button>
+          <button className="btn btn--ghost" onClick={() => setStep((x) => x - 1)} disabled={step === 0}>Voltar</button>
           {last ? (
-            <button className="stut-btn stut-btn--primary" onClick={onClose}>Começar ✓</button>
+            <button className="btn btn--primary" onClick={onClose}>Começar</button>
           ) : (
-            <button className="stut-btn stut-btn--primary" onClick={() => setStep((x) => x + 1)}>Próximo →</button>
+            <button className="btn btn--primary" onClick={() => setStep((x) => x + 1)}>Próximo</button>
           )}
         </div>
       </div>
@@ -2096,15 +2123,15 @@ function SidebarTutorial({ onClose }: { onClose: () => void }) {
   );
 }
 
-function ActionItem({ icon, title, desc, onClick }: { icon: string; title: string; desc: string; onClick: () => void }) {
+function ActionItem({ icon, title, desc, onClick, external }: { icon: NomeIcone; title: string; desc: string; onClick: () => void; external?: boolean }) {
   return (
     <button className="action-item" onClick={onClick}>
-      <span className="action-icon">{icon}</span>
+      <span className="action-icon"><Icon n={icon} s={18} /></span>
       <span className="action-text">
         <span className="action-title">{title}</span>
         <span className="action-desc">{desc}</span>
       </span>
-      <span className="action-arrow">›</span>
+      <span className="action-arrow">{external ? <Icon n="externo" s={14} /> : <Icon n="seguir" s={16} />}</span>
     </button>
   );
 }

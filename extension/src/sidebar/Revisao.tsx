@@ -16,6 +16,7 @@ import {
   promptsAtivos, sget, sset, configLlm, coletarEvidencias, proporMelhoria, testarProposta, aplicarVersao, voltarParaVersao,
   marcarEvento, registrarEvento, registrarRevisao, type Overrides, type RevisaoSalva, type Evidencias, type Proposta, type EventoControlador, type StatusControlador,
 } from "../lib/agentes";
+import { Icon, ScreenHeader } from "./ui";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -77,7 +78,7 @@ async function garantirProcessoAberto(processId: string) {
 }
 
 const base64ParaBytes = (b64: string) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-const ICONE: Record<TipoDoc | "?", string> = { pdf: "📕", interno: "📄", formulario: "📋", outro: "📎", "?": "📎" };
+const TIPO_ROTULO: Record<TipoDoc | "?", string> = { pdf: "PDF", interno: "SEI", formulario: "Form.", outro: "Anexo", "?": "Anexo" };
 
 // ════════════════════════════════════════════════════════════════════════════════
 // Aba "Revisão" do processo
@@ -152,6 +153,7 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
       const nova: RevisaoSalva = { em: new Date().toISOString(), modelo: cfg.model, reaproveitados, documentos: documentos.map((d) => ({ nome: d.nome, caracteres: d.texto.length })), resultados: res };
       await sset({ [`revisao_${processId}`]: nova });
       setSalva(nova);
+      setDocs(null); // volta para o resumo do resultado (passo 3)
       abrirCorrecoes(processId);
     } catch (e) { setErro(String((e as Error).message)); }
     setFase(null);
@@ -173,50 +175,90 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
   }
 
   if (!hasApiKey) return (
-    <div className="rev-vazio"><p>Configure a chave da IA para usar os agentes.</p><button className="btn-collect" onClick={onSettings}>⚙ Configurar</button></div>
+    <div className="rev-vazio">
+      <Icon n="chave" s={24} />
+      <p>A revisão usa a IA do tribunal. Configure a chave de acesso para começar.</p>
+      <button className="btn btn--primary" onClick={onSettings}>Configurar chave</button>
+    </div>
   );
 
   const ocupado = !!fase;
   const tokens = salva?.resultados.filter((r) => !(r as { doCache?: boolean }).doCache).reduce((a, r) => a + r.tokens.entrada + r.tokens.saida, 0) ?? 0; // só o que foi pago nesta rodada
+  const achados = salva ? salva.resultados.flatMap((r) => parseSaida(r.texto).problemas.map((p) => ({ agente: r.agente, p }))) : [];
+  const porNivel = { ALTA: 0, MÉDIA: 0, BAIXA: 0 };
+  achados.forEach((x) => porNivel[x.p.criticidade]++);
+  const avaliados = achados.filter((x) => vereditos.some((v) => v.chave === `${processId}|${chaveAchado(x.agente, x.p)}`)).length;
+  const passo = ocupado && Object.keys(status).length ? 2 : salva && !docs ? 3 : docs ? 2 : 1;
 
   return (
-    <div className="rev">
+    <div className={`rev ${salva && !docs && !fase ? "rev--resultado" : ""}`}>
+      <p className="rev-intro">Seis revisores de IA leem os documentos e apontam erros de português, de conformidade com a Lei 14.133, cláusulas faltando e inconsistências entre eles.</p>
+      <ol className="passos" aria-label="Etapas">
+        {["Escolher documentos", "Revisar", "Avaliar correções"].map((t, i) => (
+          <li key={t} className={passo === i + 1 ? "is-atual" : passo > i + 1 ? "is-feito" : ""}><span>{passo > i + 1 ? <Icon n="ok" s={11} /> : i + 1}</span>{t}</li>
+        ))}
+      </ol>
+
       <div className="rev-passo">
-        <button className="btn-collect" onClick={listar} disabled={ocupado}>
-          {docs ? "↻ Atualizar lista de documentos" : "📂 Listar documentos do processo"}
-        </button>
-        {docs && (
+        {!docs ? (
+          <button className={`btn btn--block ${salva ? "btn--ghost" : "btn--primary"}`} onClick={listar} disabled={ocupado}>
+            <Icon n="doc" s={15} /> {salva ? "Fazer nova revisão" : "Buscar documentos do processo"}
+          </button>
+        ) : (
           <>
+            <div className="rev-docs-top">
+              <span><b>{sel.size}</b> de {docs.length} selecionado(s)</span>
+              <button className="btn-link" onClick={listar} disabled={ocupado}><Icon n="atualizar" s={13} /> Atualizar</button>
+            </div>
+            <p className="rev-dica">Já deixamos marcados os documentos principais (TR, Edital, Minuta, ETP…). Ajuste se quiser.</p>
             <div className="rev-docs">
               {docs.map((d) => (
                 <label key={d.idInterno} className={`rev-doc ${sel.has(d.idInterno) ? "rev-doc--on" : ""}`}>
                   <input type="checkbox" checked={sel.has(d.idInterno)} disabled={ocupado}
                     onChange={() => setSel((s) => { const n = new Set(s); n.has(d.idInterno) ? n.delete(d.idInterno) : n.add(d.idInterno); return n; })} />
-                  <span>{ICONE[d.tipo]}</span><span className="rev-doc-titulo">{d.titulo}</span>
+                  <span className="rev-doc-titulo">{d.titulo}</span>
+                  <span className="rev-doc-tipo">{TIPO_ROTULO[d.tipo]}</span>
                 </label>
               ))}
             </div>
-            <button className="btn-collect rev-rodar" onClick={revisar} disabled={ocupado || sel.size === 0}>
-              ▶ Revisar {sel.size} documento(s) com os agentes
+            <button className="btn btn--primary btn--block" onClick={revisar} disabled={ocupado || sel.size === 0}>
+              <Icon n="play" s={14} /> Revisar {sel.size} documento{sel.size === 1 ? "" : "s"}
             </button>
-            {sel.size === 1 && <p className="rev-dica">Com 2+ documentos o Validador de Consistência compara entre eles.</p>}
+            <p className="rev-dica rev-dica--c">{sel.size === 1 ? "Com 2 ou mais documentos, um revisor também compara um com o outro. " : ""}Leva de 1 a 3 minutos.</p>
           </>
         )}
       </div>
 
-      {fase && <div className="rev-fase"><span className="collect-spinner" />{fase}
-        <div className="rev-status">{Object.entries(status).map(([id, s]) => <span key={id} className={`rev-st rev-st--${s}`}>{AGENTES.find((a) => a.id === id)?.nome.split(" ")[0]} {s === "ok" ? "✓" : s === "erro" ? "✗" : "…"}</span>)}</div>
+      {fase && <div className="rev-fase" role="status"><div className="rev-fase-txt"><span className="collect-spinner" />{fase}</div>
+        {Object.keys(status).length > 0 && <div className="rev-status">{Object.entries(status).map(([id, s]) => <span key={id} className={`rev-st rev-st--${s}`}>{s === "ok" ? <Icon n="ok" s={11} /> : s === "erro" ? <Icon n="fechar" s={11} /> : <span className="rev-st-dot" />}{AGENTES.find((a) => a.id === id)?.nome}</span>)}</div>}
       </div>}
       {erro && <div className="summary-error summary-error--inline"><p>{erro}</p></div>}
 
       {salva && !fase && (
-        <div className="rev-resultados">
-          <p className="processes-meta">
-            Revisado em {new Date(salva.em).toLocaleString("pt-BR")} · {salva.documentos.length} doc(s) · {Math.round(tokens / 1000)} mil tokens{salva.reaproveitados ? ` · ${salva.reaproveitados} agente(s) reaproveitado(s) sem custo` : ""}
-          </p>
-          <button className="btn-collect" onClick={() => abrirCorrecoes(processId)}>📋 Abrir tela de correções</button>
-          {salva.resultados.map((r) => <CartaoAgente key={r.agente} r={r} processId={processId} vereditos={vereditos} onVeredito={darVeredito} onFalta={registrarFalta} />)}
-        </div>
+        <section className="rev-resultado">
+          <p className="rev-resultado-rot">Última revisão · {new Date(salva.em).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}</p>
+          <p className="rev-resultado-num"><b>{achados.length}</b> correç{achados.length === 1 ? "ão sugerida" : "ões sugeridas"} em {salva.documentos.length} documento{salva.documentos.length === 1 ? "" : "s"}</p>
+          <div className="rev-badges">
+            {porNivel.ALTA > 0 && <span className="rev-badge rev-badge--alta">{porNivel.ALTA} alta{porNivel.ALTA > 1 ? "s" : ""}</span>}
+            {porNivel.MÉDIA > 0 && <span className="rev-badge rev-badge--media">{porNivel.MÉDIA} média{porNivel.MÉDIA > 1 ? "s" : ""}</span>}
+            {porNivel.BAIXA > 0 && <span className="rev-badge rev-badge--baixa">{porNivel.BAIXA} baixa{porNivel.BAIXA > 1 ? "s" : ""}</span>}
+          </div>
+          {achados.length > 0 && (
+            <div className="rev-avaliadas">
+              <div className="cor-barra"><span style={{ width: `${(avaliados / achados.length) * 100}%` }} /></div>
+              <span>{avaliados === achados.length ? "Todas avaliadas — obrigado!" : `${avaliados} de ${achados.length} avaliadas`}</span>
+            </div>
+          )}
+          <button className="btn btn--primary btn--block" onClick={() => abrirCorrecoes(processId)}>
+            {avaliados < achados.length ? "Abrir lista de correções" : "Ver lista de correções"} <Icon n="externo" s={14} />
+          </button>
+          <p className="rev-dica rev-dica--c">Abre numa aba ao lado. Marque cada correção como “Já alterei” ou “Não é válida” — é assim que a revisão aprende.</p>
+          <details className="rev-detalhe">
+            <summary>Ver por revisor</summary>
+            <p className="processes-meta">{Math.round(tokens / 1000)} mil tokens{salva.reaproveitados ? ` · ${salva.reaproveitados} revisor(es) reaproveitado(s) sem custo` : ""}</p>
+            {salva.resultados.map((r) => <CartaoAgente key={r.agente} r={r} processId={processId} vereditos={vereditos} onVeredito={darVeredito} onFalta={registrarFalta} />)}
+          </details>
+        </section>
       )}
     </div>
   );
@@ -229,7 +271,7 @@ function CartaoAgente({ r, processId, vereditos, onVeredito, onFalta }: {
   const s = useMemo(() => parseSaida(r.texto), [r.texto]);
   // revisões antigas guardavam a falha no texto ("Erro: ...")
   const falha = r.erro ?? (r.texto.startsWith("Erro:") ? r.texto.slice(5).trim() : undefined);
-  const [aberto, setAberto] = useState(s.problemas.length > 0 || !!falha);
+  const [aberto, setAberto] = useState(!!falha);
   const [falta, setFalta] = useState("");
   const [faltaOk, setFaltaOk] = useState(false);
   const naoAchados = new Set(r.verificacao.naoEncontrados);
@@ -238,14 +280,15 @@ function CartaoAgente({ r, processId, vereditos, onVeredito, onFalta }: {
 
   return (
     <div className="rev-agente">
-      <button className="rev-agente-head" onClick={() => setAberto((a) => !a)}>
+      <button className="rev-agente-head" onClick={() => setAberto((a) => !a)} aria-expanded={aberto}>
+        <Icon n={aberto ? "voltar" : "seguir"} s={14} className={aberto ? "rot-90" : ""} />
         <span className="rev-agente-nome">{r.nome}</span>
         <span className="rev-badges">
           {n.ALTA > 0 && <span className="rev-badge rev-badge--alta">{n.ALTA} alta</span>}
           {n.MÉDIA > 0 && <span className="rev-badge rev-badge--media">{n.MÉDIA} média</span>}
           {n.BAIXA > 0 && <span className="rev-badge rev-badge--baixa">{n.BAIXA} baixa</span>}
-          {falha && <span className="rev-badge rev-badge--alta">✗ falhou</span>}
-          {!falha && s.problemas.length === 0 && <span className="rev-badge rev-badge--ok">✓ ok</span>}
+          {falha && <span className="rev-badge rev-badge--alta">falhou</span>}
+          {!falha && s.problemas.length === 0 && <span className="rev-badge rev-badge--ok">sem apontamentos</span>}
         </span>
       </button>
       {aberto && (
@@ -260,13 +303,13 @@ function CartaoAgente({ r, processId, vereditos, onVeredito, onFalta }: {
                 <div className="rev-prob-txt">{p.problema}</div>
                 {p.trechos.map((t, i) => (
                   <div key={i} className="rev-trecho">
-                    {t === "(ausente)" ? <em>(ausente no documento)</em> : <>“{t}”{naoAchados.has(t) && <span className="rev-alerta" title="Este trecho não foi encontrado no documento — desconfie deste achado"> ⚠ não encontrado</span>}</>}
+                    {t === "(ausente)" ? <em>(ausente no documento)</em> : <>“{t}”{naoAchados.has(t) && <span className="rev-alerta" title="Este trecho não foi encontrado no documento — desconfie deste achado"> <Icon n="alerta" s={12} /> trecho não encontrado no documento</span>}</>}
                   </div>
                 ))}
-                {p.correcao && <div className="rev-corr">→ {p.correcao}</div>}
+                {p.correcao && <div className="rev-corr"><b>Sugestão:</b> {p.correcao}</div>}
                 <div className="rev-veredito">
-                  <button className={meu === "procede" ? "on" : ""} onClick={() => onVeredito(r.agente, p, meu === "procede" ? null : "procede")}>✓ Já alterei</button>
-                  <button className={meu === "falso_positivo" ? "on fp" : ""} onClick={() => onVeredito(r.agente, p, meu === "falso_positivo" ? null : "falso_positivo")}>✗ Não é válida</button>
+                  <button className={meu === "procede" ? "on" : ""} onClick={() => onVeredito(r.agente, p, meu === "procede" ? null : "procede")}><Icon n="ok" s={13} /> Já alterei</button>
+                  <button className={meu === "falso_positivo" ? "on fp" : ""} onClick={() => onVeredito(r.agente, p, meu === "falso_positivo" ? null : "falso_positivo")}><Icon n="fechar" s={13} /> Não é válida</button>
                 </div>
               </div>
             );
@@ -275,7 +318,7 @@ function CartaoAgente({ r, processId, vereditos, onVeredito, onFalta }: {
           <div className="rev-falta">
             <input placeholder="Faltou apontar algo? Descreva e tecle Enter" value={falta} onChange={(e) => { setFalta(e.target.value); setFaltaOk(false); }}
               onKeyDown={(e) => { if (e.key === "Enter" && falta.trim()) { onFalta(r.agente, falta.trim()); setFalta(""); setFaltaOk(true); } }} />
-            {faltaOk && <span className="rev-falta-ok">registrado ✓</span>}
+            {faltaOk && <span className="rev-falta-ok">Anotado, obrigado.</span>}
           </div>
         </div>
       )}
@@ -287,8 +330,8 @@ function CartaoAgente({ r, processId, vereditos, onVeredito, onFalta }: {
 // Tela do Controlador — painel: atividade automática, pendências e modo manual
 // ════════════════════════════════════════════════════════════════════════════════
 const ROTULO: Record<EventoControlador["tipo"], string> = {
-  aplicado: "✓ Ajustado", pendente: "⏳ Aguardando sua decisão", sem_mudanca: "• Sem mudança (evidência insuficiente)",
-  erro: "✗ Erro", descartado: "Descartado", desfeito: "↶ Desfeito",
+  aplicado: "Ajustado", pendente: "Aguardando sua decisão", sem_mudanca: "Sem mudança (pouca evidência)",
+  erro: "Erro", descartado: "Descartado", desfeito: "Desfeito",
 };
 
 export function ControladorScreen({ onBack }: { onBack: () => void }) {
@@ -331,21 +374,21 @@ export function ControladorScreen({ onBack }: { onBack: () => void }) {
     if (!proposta) return;
     const versao = await aplicarVersao(proposta.agente, proposta.prompt, proposta.mudancas, "manual");
     await registrarEvento({ agente: proposta.agente, tipo: "aplicado", diagnostico: proposta.diagnostico, mudancas: proposta.mudancas, placar: proposta.placar, versao });
-    setAviso(`✓ Versão ${versao} do ${nome(proposta.agente)} aplicada — vale a partir da próxima revisão.`);
+    setAviso(`Versão ${versao} do ${nome(proposta.agente)} aplicada — vale a partir da próxima revisão.`);
     setProposta(null);
   }
   async function decidirPendente(e: EventoControlador, aceitar: boolean) {
     if (aceitar && e.prompt) {
       const versao = await aplicarVersao(e.agente, e.prompt, e.mudancas ?? "", "manual");
       await marcarEvento(e.id, "aplicado", versao);
-      setAviso(`✓ Versão ${versao} do ${nome(e.agente)} aplicada.`);
+      setAviso(`Versão ${versao} do ${nome(e.agente)} aplicada.`);
     } else await marcarEvento(e.id, "descartado");
   }
   async function desfazer(e: EventoControlador) {
     if (!e.versao) return;
     await voltarParaVersao(e.agente, e.versao - 1);
     await marcarEvento(e.id, "desfeito");
-    setAviso(`↶ ${nome(e.agente)} voltou para a versão ${e.versao - 1}.`);
+    setAviso(`${nome(e.agente)} voltou para a versão ${e.versao - 1}.`);
   }
 
   async function exportar() {
@@ -371,10 +414,7 @@ export function ControladorScreen({ onBack }: { onBack: () => void }) {
 
   return (
     <div className="screen screen--active">
-      <header className="screen-header">
-        <button className="btn-back" onClick={onBack}>‹</button>
-        <span className="screen-title">Controlador dos agentes</span>
-      </header>
+      <ScreenHeader title="Controlador dos agentes" sub="Aprendizado a partir das avaliações" onBack={onBack} />
       <div className="ctrl">
         <p className="ctrl-intro">O controlador roda sozinho quando uma avaliação é concluída na tela de correções. Ele só ajusta um agente automaticamente se o teste eliminar falso alarme sem perder nenhum acerto (dá para desfazer) — o resto fica aqui para você decidir.</p>
         {status?.fase && <div className="rev-fase"><span className="collect-spinner" />{status.fase}</div>}
@@ -393,10 +433,10 @@ export function ControladorScreen({ onBack }: { onBack: () => void }) {
                   {e.diagnostico && <pre className="ctrl-pre">{e.diagnostico}</pre>}{e.mudancas && <pre className="ctrl-pre">{e.mudancas}</pre>}</details>}
                 {e.placar && <div className="ctrl-placar-linha">Falsos alarmes eliminados {e.placar.falsosPositivos.eliminados}/{e.placar.falsosPositivos.total} · acertos mantidos {e.placar.acertos.mantidos}/{e.placar.acertos.total}</div>}
                 <div className="ctrl-acoes">
-                  {e.tipo === "pendente" && <><button className="btn-collect" onClick={() => decidirPendente(e, true)}>✓ Aplicar</button>
-                    <button className="btn-collect-reset" onClick={() => decidirPendente(e, false)}>Descartar</button></>}
+                  {e.tipo === "pendente" && <><button className="btn btn--primary btn--sm" onClick={() => decidirPendente(e, true)}>Aplicar</button>
+                    <button className="btn btn--ghost btn--sm" onClick={() => decidirPendente(e, false)}>Descartar</button></>}
                   {e.tipo === "aplicado" && e.versao === versaoAtiva(e.agente) &&
-                    <button className="btn-collect-reset" onClick={() => desfazer(e)}>↶ Desfazer</button>}
+                    <button className="btn btn--ghost btn--sm" onClick={() => desfazer(e)}>Desfazer</button>}
                 </div>
               </div>
             ))}
@@ -418,12 +458,12 @@ export function ControladorScreen({ onBack }: { onBack: () => void }) {
                 <span className="ctrl-versao">v{hist.length + 1}</span>
               </div>
               <div className="ctrl-num">
-                <span>✓ {ok} procede</span><span className={fp ? "ruim" : ""}>✗ {fp} falso alarme</span>
-                <span className={fl ? "ruim" : ""}>+ {fl} faltou</span><span className={sinais ? "ruim" : ""}>⚙ {sinais} sinal(is)</span>
+                <span>{ok} procede</span><span className={fp ? "ruim" : ""}>{fp} falso alarme</span>
+                <span className={fl ? "ruim" : ""}>{fl} faltou</span><span className={sinais ? "ruim" : ""}>{sinais} sinal(is)</span>
               </div>
               <div className="ctrl-acoes">
-                <button className="btn-collect-reset" disabled={!!ocupado || fp + fl + sinais === 0} onClick={() => propor(a.id)}>🧠 Propor melhoria (manual)</button>
-                {hist.length > 0 && <button className="btn-collect-reset" onClick={() => voltarParaVersao(a.id, hist.length)}>↶ Voltar 1 versão</button>}
+                <button className="btn-collect-reset" disabled={!!ocupado || fp + fl + sinais === 0} onClick={() => propor(a.id)}>Propor melhoria</button>
+                {hist.length > 0 && <button className="btn-collect-reset" onClick={() => voltarParaVersao(a.id, hist.length)}>Voltar 1 versão</button>}
               </div>
             </div>
           );
@@ -446,11 +486,11 @@ export function ControladorScreen({ onBack }: { onBack: () => void }) {
             )}
             {ocupado && <div className="rev-fase"><span className="collect-spinner" />{ocupado}</div>}
             {erro && <div className="summary-error summary-error--inline"><p>{erro}</p></div>}
-            {!proposta.placar && !ocupado && <p className="rev-dica">1º clique em 🧪 Testar (roda o agente de novo nos processos já avaliados, leva ~1 min). Depois o Aprovar libera.</p>}
+            {!proposta.placar && !ocupado && <p className="rev-dica">1º clique em Testar (roda o agente de novo nos processos já avaliados, leva ~1 min). Depois o Aprovar libera.</p>}
             <div className="ctrl-acoes">
-              <button className="btn-collect-reset" disabled={!!ocupado} onClick={testar}>🧪 Testar nos casos salvos</button>
+              <button className="btn-collect-reset" disabled={!!ocupado} onClick={testar}>Testar nos casos salvos</button>
               <button className="btn-collect" disabled={!proposta.placar || !!ocupado} onClick={aplicar}
-                title={proposta.placar ? "" : "Teste antes de aplicar"}>{proposta.placar ? "✓ Aprovar e aplicar" : "✓ Aprovar (teste primeiro)"}</button>
+                title={proposta.placar ? "" : "Teste antes de aplicar"}>{proposta.placar ? "Aprovar e aplicar" : "Aprovar (teste primeiro)"}</button>
               <button className="btn-collect-reset" onClick={() => setProposta(null)}>Descartar</button>
             </div>
           </div>
@@ -458,8 +498,8 @@ export function ControladorScreen({ onBack }: { onBack: () => void }) {
         {!proposta && ocupado && <div className="rev-fase"><span className="collect-spinner" />{ocupado}</div>}
 
         <div className="ctrl-acoes ctrl-rodape">
-          <button className="btn-collect-reset" onClick={exportar}>⬇ Exportar avaliações e versões</button>
-          <label className="btn-collect-reset">⬆ Importar de um colega<input type="file" accept=".json" hidden onChange={(e) => e.target.files?.[0] && importar(e.target.files[0])} /></label>
+          <button className="btn-collect-reset" onClick={exportar}><Icon n="baixar" s={13} /> Exportar avaliações</button>
+          <label className="btn-collect-reset">Importar de um colega<input type="file" accept=".json" hidden onChange={(e) => e.target.files?.[0] && importar(e.target.files[0])} /></label>
         </div>
       </div>
     </div>

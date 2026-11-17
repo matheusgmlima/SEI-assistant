@@ -1847,6 +1847,16 @@ function trySaveZipUrl(processId: string) {
 let lastKnownAuth = false;
 
 let pendingCollectionCheckDone = false;
+let ultimoProcessoAberto: string | null | undefined;
+
+/** Avisa a barra lateral qual processo está aberto agora (só a página do processo, com a árvore). */
+function avisarProcessoAberto() {
+  if (!isTopFrame) return;
+  const id = document.getElementById("ifrArvore") ? getCurrentProcessId() : null;
+  if (id === ultimoProcessoAberto) return;
+  ultimoProcessoAberto = id;
+  safeStorageSet({ processoAberto: id });
+}
 
 function checkAndNotify() {
   const currentlyAuth = isAuthenticated();
@@ -1864,6 +1874,7 @@ function checkAndNotify() {
   lastKnownAuth = currentlyAuth;
 
   if (currentlyAuth) {
+    avisarProcessoAberto();
     tryCollectAndSave();
     tryExtractAndSaveDetails();
     trySaveDocUrlTemplate();
