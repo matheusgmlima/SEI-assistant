@@ -11,7 +11,18 @@ import { chatCompletion } from "./llm.ts";
 const { semSumario } = T;
 
 export type AgenteId = "a1-revisor" | "a2-consistencia" | "a3-conformidade" | "a4-estrutura" | "a5-dados" | "a6-inconsistencias";
-export interface Documento { nome: string; texto: string }
+/** papel "referencia" = fonte (currículo, e-mail, nota…): não é revisado, só serve para conferir o que os outros dizem. */
+export interface Documento { nome: string; texto: string; papel?: "revisar" | "referencia" }
+const ehRef = (d: Documento) => d.papel === "referencia";
+
+const REGRAS_REFERENCIA = (revisar: Documento[], refs: Documento[]) => `# PAPEL DOS DOCUMENTOS
+Documentos A REVISAR: ${revisar.map((d) => d.nome).join("; ")}.
+Documentos de REFERÊNCIA: ${refs.map((d) => d.nome).join("; ")}.
+- Documentos de referência (currículos, e-mails, atas, notas, comprovantes…) são FONTES. Nunca aponte problema neles, não cobre campos ausentes neles e não aplique o checklist de campos a eles — o checklist vale só entre documentos a revisar.
+- Use-os para conferir o que os documentos a revisar AFIRMAM sobre eles: nomes, cargos, formação, datas, períodos, números, valores, quantidades, nº de documento/processo, títulos e citações.
+- Cada divergência é apontada NO documento a revisar ("onde" = local no documento a revisar), com o Trecho do documento a revisar e um Trecho (<nome da referência>) com o que a fonte diz.
+- Informação do documento a revisar que simplesmente não aparece nas referências NÃO é erro — aponte só contradição clara entre o que o documento afirma e o que a fonte mostra.
+- Criticidade: [ALTA] nome, data, valor, número ou conclusão que muda o sentido; [MÉDIA] demais divergências de fato; [BAIXA] grafia diferente do mesmo dado.`;
 export interface Prompts { comum: string; lei: string; agentes: Record<AgenteId, string> }
 export interface LlmConfig { baseUrl: string; apiKey: string; model: string; modelRapido?: string }
 
@@ -84,10 +95,15 @@ const toolDefs = (nomes: (keyof typeof FN)[]) => nomes.map((n) => ({
 export function montarMensagens(agente: Agente, prompts: Prompts, docs: Documento[]) {
   const system = [prompts.comum, prompts.agentes[agente.id], agente.usaLei ? `# BASE DE CONHECIMENTO\n${prompts.lei}` : ""]
     .filter(Boolean).join("\n\n");
-  const ferramentas = docs.map((d) => ({ documento: d.nome, ...agente.preTools(semSumario(d.texto)) }));
+  const revisar = docs.filter((d) => !ehRef(d));
+  const refs = docs.filter(ehRef);
+  // ferramentas só nos documentos revisados (rodar o checklist num currículo é ruído e custo)
+  const ferramentas = revisar.map((d) => ({ documento: d.nome, ...agente.preTools(semSumario(d.texto)) }));
   const user = [
-    `# RESULTADO DAS FERRAMENTAS (já executadas)\n${JSON.stringify(docs.length === 1 ? ferramentas[0] : ferramentas)}`,
-    ...docs.map((d) => `# DOCUMENTO: ${d.nome}\n${d.texto}`),
+    ...(refs.length ? [REGRAS_REFERENCIA(revisar, refs)] : []),
+    `# RESULTADO DAS FERRAMENTAS (já executadas)\n${JSON.stringify(ferramentas.length === 1 ? ferramentas[0] : ferramentas)}`,
+    // sem referências o texto fica idêntico ao de antes (não invalida o cache das revisões já feitas)
+    ...docs.map((d) => `# ${!refs.length ? "DOCUMENTO" : ehRef(d) ? "DOCUMENTO DE REFERÊNCIA (não revisar)" : "DOCUMENTO A REVISAR"}: ${d.nome}\n${d.texto}`),
   ].join("\n\n");
   return [{ role: "system", content: system }, { role: "user", content: user }];
 }
@@ -140,9 +156,15 @@ export async function rodarAgente(id: AgenteId, docs: Documento[], cfg: LlmConfi
   const agente = AGENTES.find((a) => a.id === id)!;
   // Agente de 1 documento recebe UM por chamada: com vários juntos (DFD+minuta+TR) o
   // modelo se dilui — no TR real o revisor achou 2 problemas sozinho e 0 com os 3 juntos.
-  if (!agente.multiDoc && docs.length > 1) {
-    const partes = await Promise.allSettled(docs.map((d) => rodarUmaVez(agente, [d], cfg, prompts)));
-    return juntarResultados(agente, docs, partes);
+  // Documentos de referência só entram no comparador (multiDoc) — os demais agentes não os revisam.
+  if (!agente.multiDoc) {
+    const alvo = docs.filter((d) => !ehRef(d));
+    if (!alvo.length) throw new Error("nenhum documento marcado para revisar");
+    if (alvo.length > 1) {
+      const partes = await Promise.allSettled(alvo.map((d) => rodarUmaVez(agente, [d], cfg, prompts)));
+      return juntarResultados(agente, alvo, partes);
+    }
+    return rodarUmaVez(agente, alvo, cfg, prompts);
   }
   return rodarUmaVez(agente, docs, cfg, prompts);
 }
@@ -214,7 +236,9 @@ async function rodarUmaVez(agente: Agente, docs: Documento[], cfgBase: LlmConfig
 }
 
 export function agentesAplicaveis(docs: Documento[]): AgenteId[] {
-  return AGENTES.filter((a) => !a.multiDoc || docs.length >= 2).map((a) => a.id);
+  // comparador: 2+ documentos com ao menos 1 a revisar (1 revisado + referências também vale)
+  const revisar = docs.filter((d) => !ehRef(d)).length;
+  return revisar ? AGENTES.filter((a) => !a.multiDoc || docs.length >= 2).map((a) => a.id) : [];
 }
 
 // ── Verificação dos trechos citados (anti-alucinação) ───────────────────────────

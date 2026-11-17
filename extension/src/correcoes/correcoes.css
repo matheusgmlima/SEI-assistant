@@ -82,3 +82,5 @@ body { background: var(--color-bg); }
 .cor-ok { color: var(--color-success); font-size: 12.5px; margin: 8px 0 0; }
 
 @media (max-width: 720px) { .cor-item { grid-template-columns: 1fr; } }
+.cor-doc--ref { background: transparent; border-style: dashed; color: var(--color-muted); }
+.cor-doc small { font-size: 11px; }

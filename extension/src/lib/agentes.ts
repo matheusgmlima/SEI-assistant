@@ -38,7 +38,7 @@ export async function registrarRevisao(r: RegistroRevisao) {
   const log = (await sget<RegistroRevisao[] | undefined>("statsRevisoes")) ?? [];
   await sset({ statsRevisoes: [...log, r].slice(-500) });
 }
-export interface RevisaoSalva { em: string; modelo: string; reaproveitados?: number; documentos: { nome: string; caracteres: number }[]; resultados: ResultadoAgente[] }
+export interface RevisaoSalva { em: string; modelo: string; reaproveitados?: number; documentos: { nome: string; caracteres: number; papel?: "revisar" | "referencia" }[]; resultados: ResultadoAgente[] }
 
 export async function configLlm(papel: "agentes" | "controlador"): Promise<LlmConfig | null> {
   const c = normalizarConfig(await sget<unknown>("aiConfig"));

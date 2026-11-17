@@ -23,7 +23,7 @@ const TITULO = { ALTA: "Prioridade alta", MÉDIA: "Prioridade média", BAIXA: "P
 const DICA = { ALTA: "Podem gerar questionamento ou nulidade — vale corrigir antes de seguir.", MÉDIA: "Afetam clareza ou conformidade.", BAIXA: "Ajustes de forma: português, numeração, padronização." } as const;
 
 function App() {
-  const [revisao, setRevisao] = useState<{ em: string; documentos: { nome: string }[]; resultados: ResultadoAgente[] } | null | undefined>(undefined);
+  const [revisao, setRevisao] = useState<{ em: string; documentos: { nome: string; papel?: string }[]; resultados: ResultadoAgente[] } | null | undefined>(undefined);
   const [vereditos, setVereditos] = useState<Veredito[]>([]);
   const [soPendentes, setSoPendentes] = useState(false);
   const [ctrl, setCtrl] = useState<{ status: StatusControlador | null; eventos: EventoControlador[] }>({ status: null, eventos: [] });
@@ -100,7 +100,7 @@ function App() {
         </div>
       </header>
 
-      <div className="cor-docs">{revisao.documentos.map((d) => <span key={d.nome} className="cor-doc"><Icon n="doc" s={13} />{d.nome}</span>)}</div>
+      <div className="cor-docs">{revisao.documentos.map((d) => <span key={d.nome} className={`cor-doc ${d.papel === "referencia" ? "cor-doc--ref" : ""}`}><Icon n="doc" s={13} />{d.nome}{d.papel === "referencia" && <small> · referência</small>}</span>)}</div>
 
       {feitos === 0 && itens.length > 0 && (
         <section className="cor-como">

@@ -51,4 +51,4 @@ export function htmlParaTexto(html: string): string {
 
 /** Documentos que normalmente merecem revisão — vêm pré-marcados na tela. */
 export const ehDocumentoPrincipal = (titulo: string) =>
-  /termo de refer|estudo t[ée]cnico|\bETP\b|\bTR\b|projeto b[áa]sico|\bDFD\b|formaliza[çc][ãa]o d[ae] demanda|edital|minuta/i.test(titulo);
+  /termo de refer|estudo t[ée]cnico|relat[óo]rio|parecer|nota t[ée]cnica|\bETP\b|\bTR\b|projeto b[áa]sico|\bDFD\b|formaliza[çc][ãa]o d[ae] demanda|edital|minuta/i.test(titulo);

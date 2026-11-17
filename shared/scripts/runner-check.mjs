@@ -23,6 +23,21 @@ const l = limparSaida("Não há CNPJ, analiso agora.\n\nValidador de Dados — T
 assert.ok(l.texto.startsWith("Validador de Dados"));
 assert.ok(!l.texto.includes("**"));
 assert.equal(l.violacoes.length, 2);
+// Documentos de referência: comparador roda com 1 revisado + refs; nada roda só com refs;
+// a mensagem marca os papéis e as ferramentas rodam só no revisado.
+const { agentesAplicaveis, montarMensagens, AGENTES } = await import("../src/agents/runner.ts");
+const rel = { nome: "Relatório", texto: "x".repeat(300) }, cv = { nome: "Currículo", texto: "y".repeat(300), papel: "referencia" };
+assert.ok(agentesAplicaveis([rel, cv]).includes("a2-consistencia"));
+assert.ok(!agentesAplicaveis([rel]).includes("a2-consistencia"));
+assert.equal(agentesAplicaveis([cv]).length, 0);
+const P = { comum: "", lei: "", agentes: Object.fromEntries(AGENTES.map((a) => [a.id, ""])) };
+const u = montarMensagens(AGENTES.find((a) => a.id === "a2-consistencia"), P, [rel, cv])[1].content;
+assert.match(u, /PAPEL DOS DOCUMENTOS/);
+assert.match(u, /DOCUMENTO DE REFERÊNCIA \(não revisar\): Currículo/);
+assert.ok(!u.includes('"documento":"Currículo"'));
+const sem = montarMensagens(AGENTES[0], P, [rel])[1].content;   // sem referência: formato antigo (cache continua valendo)
+assert.match(sem, /^# RESULTADO DAS FERRAMENTAS/);
+assert.match(sem, /# DOCUMENTO: Relatório/);
 console.log("runner-check OK");
 
 // ── Controlador: regressão e extração da proposta ──────────────────────────────

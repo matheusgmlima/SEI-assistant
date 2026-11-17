@@ -86,6 +86,7 @@ const TIPO_ROTULO: Record<TipoDoc | "?", string> = { pdf: "PDF", interno: "SEI",
 export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: string; hasApiKey: boolean; onSettings: () => void }) {
   const [docs, setDocs] = useState<{ idInterno: string; numero: string; titulo: string; tipo: TipoDoc }[] | null>(null);
   const [sel, setSel] = useState<Set<string>>(new Set());
+  const [refs, setRefs] = useState<Set<string>>(new Set()); // selecionados que são só referência (não revisados)
   const [fase, setFase] = useState<string | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [status, setStatus] = useState<Partial<Record<AgenteId, "rodando" | "ok" | "erro">>>({});
@@ -109,6 +110,7 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
       const lista = await enviarAbaAtiva<typeof docs>({ type: "REVISAO_LISTAR", payload: { processId } });
       setDocs(lista);
       setSel(new Set((lista ?? []).filter((d) => ehDocumentoPrincipal(d.titulo)).map((d) => d.idInterno)));
+      setRefs(new Set());
     } catch (e) { setErro(String((e as Error).message)); }
     setFase(null);
   }
@@ -129,9 +131,10 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
         setFase(`Extraindo texto: ${d.titulo.slice(0, 50)}…`);
         const texto = d.pdfBase64 ? (await pdfToText(base64ParaBytes(d.pdfBase64))).texto : d.texto ?? "";
         if (texto.trim().length < 200) { avisos.push(`${d.titulo}: sem texto legível (PDF escaneado?) — não analisado`); continue; }
-        documentos.push({ nome: d.titulo, texto });
+        documentos.push({ nome: d.titulo, texto, ...(refs.has(d.idInterno) ? { papel: "referencia" as const } : {}) });
       }
       if (!documentos.length) throw new Error(avisos.join(" · ") || "Nenhum documento com texto.");
+      if (documentos.every((d) => d.papel === "referencia")) throw new Error(avisos.join(" · ") || "Nenhum documento para revisar conseguiu ser lido.");
       if (avisos.length) setErro(avisos.join(" · "));
       await sset({ [`revisaoDocs_${processId}`]: documentos }); // casos para a regressão do controlador
       const ids = agentesAplicaveis(documentos);
@@ -150,7 +153,7 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
       if (falhas.length === res.length) throw new Error(`Nenhum agente rodou. ${falhas[0].erro} — confira em ⚙ se o provider é "LiteLLM TJPE" e a chave está correta (modelo usado: ${cfg.model}).`);
       if (falhas.length) setErro(`${falhas.length} agente(s) falharam: ${falhas[0].erro}`);
       const reaproveitados = res.filter((r) => (r as { doCache?: boolean }).doCache).length;
-      const nova: RevisaoSalva = { em: new Date().toISOString(), modelo: cfg.model, reaproveitados, documentos: documentos.map((d) => ({ nome: d.nome, caracteres: d.texto.length })), resultados: res };
+      const nova: RevisaoSalva = { em: new Date().toISOString(), modelo: cfg.model, reaproveitados, documentos: documentos.map((d) => ({ nome: d.nome, caracteres: d.texto.length, ...(d.papel ? { papel: d.papel } : {}) })), resultados: res };
       await sset({ [`revisao_${processId}`]: nova });
       setSalva(nova);
       setDocs(null); // volta para o resumo do resultado (passo 3)
@@ -183,8 +186,18 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
   );
 
   const ocupado = !!fase;
+  const nRef = [...sel].filter((id) => refs.has(id)).length;
+  const nRev = sel.size - nRef;
+  // marcar: documento principal (TR, edital…) entra para revisar; anexos (currículo, e-mail…) como referência
+  function marcarDoc(id: string, titulo: string) {
+    const tirar = sel.has(id);
+    setSel((s) => { const n = new Set(s); tirar ? n.delete(id) : n.add(id); return n; });
+    setRefs((r) => { const n = new Set(r); if (tirar || ehDocumentoPrincipal(titulo)) n.delete(id); else n.add(id); return n; });
+  }
+  const papel = (id: string, ref: boolean) => setRefs((r) => { const n = new Set(r); ref ? n.add(id) : n.delete(id); return n; });
   const tokens = salva?.resultados.filter((r) => !(r as { doCache?: boolean }).doCache).reduce((a, r) => a + r.tokens.entrada + r.tokens.saida, 0) ?? 0; // só o que foi pago nesta rodada
   const achados = salva ? salva.resultados.flatMap((r) => parseSaida(r.texto).problemas.map((p) => ({ agente: r.agente, p }))) : [];
+  const nRevisados = salva ? salva.documentos.filter((d) => d.papel !== "referencia").length : 0;
   const porNivel = { ALTA: 0, MÉDIA: 0, BAIXA: 0 };
   achados.forEach((x) => porNivel[x.p.criticidade]++);
   const avaliados = achados.filter((x) => vereditos.some((v) => v.chave === `${processId}|${chaveAchado(x.agente, x.p)}`)).length;
@@ -207,24 +220,33 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
         ) : (
           <>
             <div className="rev-docs-top">
-              <span><b>{sel.size}</b> de {docs.length} selecionado(s)</span>
+              <span><b>{nRev}</b> para revisar{nRef ? <> · <b>{nRef}</b> de referência</> : ""}</span>
               <button className="btn-link" onClick={listar} disabled={ocupado}><Icon n="atualizar" s={13} /> Atualizar</button>
             </div>
-            <p className="rev-dica">Já deixamos marcados os documentos principais (TR, Edital, Minuta, ETP…). Ajuste se quiser.</p>
+            <p className="rev-dica">Marque os documentos e escolha o papel de cada um. <b>Revisar</b>: a IA aponta correções nele. <b>Referência</b> (currículos, e-mails, notas…): não é corrigido, só serve para conferir se os outros citam certo o que está nele.</p>
             <div className="rev-docs">
-              {docs.map((d) => (
-                <label key={d.idInterno} className={`rev-doc ${sel.has(d.idInterno) ? "rev-doc--on" : ""}`}>
-                  <input type="checkbox" checked={sel.has(d.idInterno)} disabled={ocupado}
-                    onChange={() => setSel((s) => { const n = new Set(s); n.has(d.idInterno) ? n.delete(d.idInterno) : n.add(d.idInterno); return n; })} />
-                  <span className="rev-doc-titulo">{d.titulo}</span>
-                  <span className="rev-doc-tipo">{TIPO_ROTULO[d.tipo]}</span>
-                </label>
-              ))}
+              {docs.map((d) => {
+                const on = sel.has(d.idInterno), ref = refs.has(d.idInterno);
+                return (
+                  <div key={d.idInterno} className={`rev-doc ${on ? (ref ? "rev-doc--ref" : "rev-doc--on") : ""}`}>
+                    <label className="rev-doc-sel">
+                      <input type="checkbox" checked={on} disabled={ocupado} onChange={() => marcarDoc(d.idInterno, d.titulo)} />
+                      <span className="rev-doc-titulo" title={d.titulo}>{d.titulo}</span>
+                    </label>
+                    {on ? (
+                      <span className="rev-papel" role="group" aria-label={`Papel de ${d.titulo}`}>
+                        <button type="button" className={!ref ? "on" : ""} aria-pressed={!ref} disabled={ocupado} onClick={() => papel(d.idInterno, false)}>Revisar</button>
+                        <button type="button" className={ref ? "on" : ""} aria-pressed={ref} disabled={ocupado} onClick={() => papel(d.idInterno, true)}>Referência</button>
+                      </span>
+                    ) : <span className="rev-doc-tipo">{TIPO_ROTULO[d.tipo]}</span>}
+                  </div>
+                );
+              })}
             </div>
-            <button className="btn btn--primary btn--block" onClick={revisar} disabled={ocupado || sel.size === 0}>
-              <Icon n="play" s={14} /> Revisar {sel.size} documento{sel.size === 1 ? "" : "s"}
+            <button className="btn btn--primary btn--block" onClick={revisar} disabled={ocupado || nRev === 0}>
+              <Icon n="play" s={14} /> Revisar {nRev} documento{nRev === 1 ? "" : "s"}{nRef ? ` (+${nRef} de referência)` : ""}
             </button>
-            <p className="rev-dica rev-dica--c">{sel.size === 1 ? "Com 2 ou mais documentos, um revisor também compara um com o outro. " : ""}Leva de 1 a 3 minutos.</p>
+            <p className="rev-dica rev-dica--c">{nRev === 0 && sel.size > 0 ? "Marque ao menos um documento como “Revisar”. " : nRev + nRef === 1 ? "Com 2 ou mais documentos, um revisor também compara um com o outro. " : ""}Leva de 1 a 3 minutos.</p>
           </>
         )}
       </div>
@@ -237,7 +259,7 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
       {salva && !fase && (
         <section className="rev-resultado">
           <p className="rev-resultado-rot">Última revisão · {new Date(salva.em).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}</p>
-          <p className="rev-resultado-num"><b>{achados.length}</b> correç{achados.length === 1 ? "ão sugerida" : "ões sugeridas"} em {salva.documentos.length} documento{salva.documentos.length === 1 ? "" : "s"}</p>
+          <p className="rev-resultado-num"><b>{achados.length}</b> correç{achados.length === 1 ? "ão sugerida" : "ões sugeridas"} em {nRevisados} documento{nRevisados === 1 ? "" : "s"}{salva.documentos.length > nRevisados ? ` (+${salva.documentos.length - nRevisados} de referência)` : ""}</p>
           <div className="rev-badges">
             {porNivel.ALTA > 0 && <span className="rev-badge rev-badge--alta">{porNivel.ALTA} alta{porNivel.ALTA > 1 ? "s" : ""}</span>}
             {porNivel.MÉDIA > 0 && <span className="rev-badge rev-badge--media">{porNivel.MÉDIA} média{porNivel.MÉDIA > 1 ? "s" : ""}</span>}
