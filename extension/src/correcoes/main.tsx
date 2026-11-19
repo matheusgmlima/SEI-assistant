@@ -100,7 +100,7 @@ function App() {
         </div>
       </header>
 
-      <div className="cor-docs">{revisao.documentos.map((d) => <span key={d.nome} className={`cor-doc ${d.papel === "referencia" ? "cor-doc--ref" : ""}`}><Icon n="doc" s={13} />{d.nome}{d.papel === "referencia" && <small> · referência</small>}</span>)}</div>
+      <div className="cor-docs">{revisao.documentos.map((d) => <span key={d.nome} className={`cor-doc ${d.papel === "referencia" || d.papel === "modelo" ? "cor-doc--ref" : ""}`}><Icon n="doc" s={13} />{d.nome}{d.papel === "referencia" && <small> · referência</small>}{d.papel === "modelo" && <small> · modelo da unidade</small>}</span>)}</div>
 
       {feitos === 0 && itens.length > 0 && (
         <section className="cor-como">

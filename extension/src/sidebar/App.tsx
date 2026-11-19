@@ -6,10 +6,11 @@ import type {
 import { deriveStatus, extractImportantDocs, cleanDocTitle } from "@shared/index";
 import { MODELOS, MODELO_PADRAO, LITELLM_URL, normalizarConfig, configLegada, type AiConfig } from "@shared/agents/llm";
 import { RevisaoPanel, ControladorScreen } from "./Revisao";
+import { BaseScreen } from "./Base";
 import { Icon, ScreenHeader, type NomeIcone } from "./ui";
 
 // ─── Tipos de view ──────────────────────────────────────────────────────────────
-type View = "main" | "processes" | "processDetail" | "settings" | "controlador";
+type View = "main" | "processes" | "processDetail" | "settings" | "controlador" | "base";
 type DetailTab = "resumo" | "tramitacao" | "auditoria" | "perguntar" | "revisao";
 
 // ─── Tramitação — tipos e lógica ────────────────────────────────────────────────
@@ -624,7 +625,7 @@ function IdleScreen() {
 }
 
 // ── Tela: Configurações ─────────────────────────────────────────────────────────
-function SettingsScreen({ onBack, onControlador }: { onBack: () => void; onControlador: () => void }) {
+function SettingsScreen({ onBack, onControlador, onBase }: { onBack: () => void; onControlador: () => void; onBase: () => void }) {
   const { config, legada, save } = useAiConfig();
   const [apiKey, setApiKey] = useState("");
   const [ver, setVer] = useState(false);
@@ -677,6 +678,9 @@ function SettingsScreen({ onBack, onControlador }: { onBack: () => void; onContr
           </select>
           <p className="set-help set-help--small">Os agentes de revisão escolhem o modelo sozinhos. Mudou o modelo? Clique em Salvar acima.</p>
 
+          <button className="set-link" onClick={onBase}>
+            <span><b>Base de modelos</b><small>Modelos e exemplos da caixinha da unidade (curador)</small></span><Icon n="seguir" />
+          </button>
           <button className="set-link" onClick={onControlador}>
             <span><b>Controlador dos agentes</b><small>Ajustes automáticos feitos a partir das avaliações</small></span><Icon n="seguir" />
           </button>
@@ -1967,7 +1971,8 @@ function ActiveScreen({ session }: { session: SessionInfo }) {
   }
   function abrirProcesso(id: string, de: View) { setSelectedProcess(id); setDetailFrom(de); setView("processDetail"); }
 
-  if (view === "settings") return <SettingsScreen onBack={() => setView("main")} onControlador={() => setView("controlador")} />;
+  if (view === "settings") return <SettingsScreen onBack={() => setView("main")} onControlador={() => setView("controlador")} onBase={() => setView("base")} />;
+  if (view === "base") return <BaseScreen onBack={() => setView("settings")} />;
   if (view === "controlador") return <ControladorScreen onBack={() => setView("settings")} />;
 
   if (view === "processDetail" && selectedProcess) {

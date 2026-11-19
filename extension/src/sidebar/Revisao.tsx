@@ -17,6 +17,8 @@ import {
   marcarEvento, registrarEvento, registrarRevisao, type Overrides, type RevisaoSalva, type Evidencias, type Proposta, type EventoControlador, type StatusControlador,
 } from "../lib/agentes";
 import { Icon, ScreenHeader } from "./ui";
+import { escolherModelos, tipoPeloTitulo, ROTULO_TIPO } from "@shared/base/modelos";
+import { grupoAtual, modelosDoGrupo } from "../lib/base";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -47,7 +49,7 @@ async function rodarComCache(id: AgenteId, docs: Documento[], cfg: LlmConfig, pr
 const abrirCorrecoes = (proc: string) =>
   chrome.tabs.create({ url: chrome.runtime.getURL("dist/correcoes.html") + "?proc=" + encodeURIComponent(proc) });
 
-function enviarAbaAtiva<T>(msg: unknown): Promise<T> {
+export function enviarAbaAtiva<T>(msg: unknown): Promise<T> {
   return new Promise((resolve, reject) => chrome.tabs.query({ url: "https://sei.cloud.tjpe.jus.br/*" }, (tabs) => {
     // prefere a aba do SEI que está à vista; a ativa pode ser a tela de correções
     const id = (tabs.find((t) => t.active) ?? tabs[0])?.id;
@@ -60,7 +62,7 @@ function enviarAbaAtiva<T>(msg: unknown): Promise<T> {
 }
 /** Abre o processo no SEI se preciso (cliques no Controle de Processos → processo) e
  *  espera a página dele carregar. Mesma navegação segura da coleta do resumo. */
-async function garantirProcessoAberto(processId: string) {
+export async function garantirProcessoAberto(processId: string) {
   const { pronto } = await enviarAbaAtiva<{ pronto: boolean }>({ type: "REVISAO_ABRIR", payload: { processId } });
   if (pronto) return;
   const chave = `revisaoAberta_${processId}`;
@@ -78,7 +80,38 @@ async function garantirProcessoAberto(processId: string) {
 }
 
 const base64ParaBytes = (b64: string) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+
+/** Baixa documentos da árvore do SEI e extrai o texto (HTML ou PDF). Usado na revisão e na base de modelos. */
+export async function lerDoSei(ids: string[], onFase: (f: string) => void) {
+  const brutos = await enviarAbaAtiva<{ idInterno: string; titulo: string; tipo: string; texto?: string; pdfBase64?: string; erro?: string }[]>({ type: "REVISAO_LER", payload: { ids } });
+  const lidos: { idInterno: string; titulo: string; texto: string }[] = [];
+  const avisos: string[] = [];
+  for (const d of brutos) {
+    if (d.erro) { avisos.push(`${d.titulo}: ${d.erro}`); continue; }
+    onFase(`Extraindo texto: ${d.titulo.slice(0, 50)}…`);
+    const texto = d.pdfBase64 ? (await pdfToText(base64ParaBytes(d.pdfBase64))).texto : d.texto ?? "";
+    if (texto.trim().length < 200) { avisos.push(`${d.titulo}: sem texto legível (PDF escaneado?) — ignorado`); continue; }
+    lidos.push({ idInterno: d.idInterno, titulo: d.titulo, texto });
+  }
+  return { lidos, avisos };
+}
 const TIPO_ROTULO: Record<TipoDoc | "?", string> = { pdf: "PDF", interno: "SEI", formulario: "Form.", outro: "Anexo", "?": "Anexo" };
+
+/** Um modelo por documento revisado (o mais parecido da caixinha, mesmo tipo), sem repetir. */
+async function modelosParaComparar(docs: Documento[]): Promise<Documento[]> {
+  const grupo = await grupoAtual();
+  if (!grupo) return [];
+  const base = await modelosDoGrupo(grupo);
+  const usados = new Map<string, Documento>();
+  for (const d of docs.filter((x) => !x.papel)) {
+    const tipo = tipoPeloTitulo(d.nome);
+    if (tipo === "outro") continue;
+    const m = escolherModelos(base, { grupo, tipo, texto: d.texto })[0]?.modelo;
+    if (m && !usados.has(m.id)) usados.set(m.id, {
+      nome: `${m.natureza === "modelo_oficial" ? "Modelo oficial" : "Exemplo"} da unidade (${ROTULO_TIPO[m.tipo]}) — ${m.titulo}`, texto: m.texto, papel: "modelo" });
+  }
+  return [...usados.values()];
+}
 
 // ════════════════════════════════════════════════════════════════════════════════
 // Aba "Revisão" do processo
@@ -87,6 +120,9 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
   const [docs, setDocs] = useState<{ idInterno: string; numero: string; titulo: string; tipo: TipoDoc }[] | null>(null);
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [refs, setRefs] = useState<Set<string>>(new Set()); // selecionados que são só referência (não revisados)
+  const [usarModelos, setUsarModelos] = useState(true);
+  const [temBase, setTemBase] = useState<{ grupo: string; n: number } | null>(null);
+  useEffect(() => { grupoAtual().then(async (g) => { if (g) { const n = (await modelosDoGrupo(g)).length; setTemBase(n ? { grupo: g, n } : null); } }); }, []);
   const [fase, setFase] = useState<string | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [status, setStatus] = useState<Partial<Record<AgenteId, "rodando" | "ok" | "erro">>>({});
@@ -123,18 +159,12 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
       setFase("Conferindo se o processo está aberto no SEI…");
       await garantirProcessoAberto(processId); // a pessoa pode ter mudado de página depois de listar
       setFase(`Baixando ${sel.size} documento(s) do SEI…`);
-      const lidos = await enviarAbaAtiva<{ idInterno: string; titulo: string; tipo: string; texto?: string; pdfBase64?: string; erro?: string }[]>({ type: "REVISAO_LER", payload: { ids: [...sel] } });
-      const documentos: Documento[] = [];
-      const avisos: string[] = [];
-      for (const d of lidos) {
-        if (d.erro) { avisos.push(`${d.titulo}: ${d.erro}`); continue; }
-        setFase(`Extraindo texto: ${d.titulo.slice(0, 50)}…`);
-        const texto = d.pdfBase64 ? (await pdfToText(base64ParaBytes(d.pdfBase64))).texto : d.texto ?? "";
-        if (texto.trim().length < 200) { avisos.push(`${d.titulo}: sem texto legível (PDF escaneado?) — não analisado`); continue; }
-        documentos.push({ nome: d.titulo, texto, ...(refs.has(d.idInterno) ? { papel: "referencia" as const } : {}) });
-      }
+      const { lidos, avisos } = await lerDoSei([...sel], setFase);
+      const documentos: Documento[] = lidos.map((d) => ({ nome: d.titulo, texto: d.texto, ...(refs.has(d.idInterno) ? { papel: "referencia" as const } : {}) }));
       if (!documentos.length) throw new Error(avisos.join(" · ") || "Nenhum documento com texto.");
       if (documentos.every((d) => d.papel === "referencia")) throw new Error(avisos.join(" · ") || "Nenhum documento para revisar conseguiu ser lido.");
+      // Base de modelos: para cada documento revisado, o modelo mais parecido da caixinha da unidade
+      if (usarModelos) documentos.push(...await modelosParaComparar(documentos));
       if (avisos.length) setErro(avisos.join(" · "));
       await sset({ [`revisaoDocs_${processId}`]: documentos }); // casos para a regressão do controlador
       const ids = agentesAplicaveis(documentos);
@@ -197,7 +227,8 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
   const papel = (id: string, ref: boolean) => setRefs((r) => { const n = new Set(r); ref ? n.add(id) : n.delete(id); return n; });
   const tokens = salva?.resultados.filter((r) => !(r as { doCache?: boolean }).doCache).reduce((a, r) => a + r.tokens.entrada + r.tokens.saida, 0) ?? 0; // só o que foi pago nesta rodada
   const achados = salva ? salva.resultados.flatMap((r) => parseSaida(r.texto).problemas.map((p) => ({ agente: r.agente, p }))) : [];
-  const nRevisados = salva ? salva.documentos.filter((d) => d.papel !== "referencia").length : 0;
+  const nRevisados = salva ? salva.documentos.filter((d) => !d.papel || d.papel === "revisar").length : 0;
+  const modelosUsados = salva ? salva.documentos.filter((d) => d.papel === "modelo") : [];
   const porNivel = { ALTA: 0, MÉDIA: 0, BAIXA: 0 };
   achados.forEach((x) => porNivel[x.p.criticidade]++);
   const avaliados = achados.filter((x) => vereditos.some((v) => v.chave === `${processId}|${chaveAchado(x.agente, x.p)}`)).length;
@@ -243,6 +274,12 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
                 );
               })}
             </div>
+            {temBase && (
+              <label className="settings-check rev-modelos">
+                <input type="checkbox" checked={usarModelos} onChange={(e) => setUsarModelos(e.target.checked)} disabled={ocupado} />
+                <span>Comparar com os modelos da caixinha <b>{temBase.grupo}</b> ({temBase.n} na base)</span>
+              </label>
+            )}
             <button className="btn btn--primary btn--block" onClick={revisar} disabled={ocupado || nRev === 0}>
               <Icon n="play" s={14} /> Revisar {nRev} documento{nRev === 1 ? "" : "s"}{nRef ? ` (+${nRef} de referência)` : ""}
             </button>
@@ -259,7 +296,8 @@ export function RevisaoPanel({ processId, hasApiKey, onSettings }: { processId: 
       {salva && !fase && (
         <section className="rev-resultado">
           <p className="rev-resultado-rot">Última revisão · {new Date(salva.em).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}</p>
-          <p className="rev-resultado-num"><b>{achados.length}</b> correç{achados.length === 1 ? "ão sugerida" : "ões sugeridas"} em {nRevisados} documento{nRevisados === 1 ? "" : "s"}{salva.documentos.length > nRevisados ? ` (+${salva.documentos.length - nRevisados} de referência)` : ""}</p>
+          <p className="rev-resultado-num"><b>{achados.length}</b> correç{achados.length === 1 ? "ão sugerida" : "ões sugeridas"} em {nRevisados} documento{nRevisados === 1 ? "" : "s"}{salva.documentos.length - nRevisados - modelosUsados.length > 0 ? ` (+${salva.documentos.length - nRevisados - modelosUsados.length} de referência)` : ""}</p>
+          {modelosUsados.length > 0 && <p className="rev-dica">Comparado com {modelosUsados.map((d) => d.nome).join("; ")}.</p>}
           <div className="rev-badges">
             {porNivel.ALTA > 0 && <span className="rev-badge rev-badge--alta">{porNivel.ALTA} alta{porNivel.ALTA > 1 ? "s" : ""}</span>}
             {porNivel.MÉDIA > 0 && <span className="rev-badge rev-badge--media">{porNivel.MÉDIA} média{porNivel.MÉDIA > 1 ? "s" : ""}</span>}

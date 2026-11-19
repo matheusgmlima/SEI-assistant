@@ -38,6 +38,11 @@ assert.ok(!u.includes('"documento":"Currículo"'));
 const sem = montarMensagens(AGENTES[0], P, [rel])[1].content;   // sem referência: formato antigo (cache continua valendo)
 assert.match(sem, /^# RESULTADO DAS FERRAMENTAS/);
 assert.match(sem, /# DOCUMENTO: Relatório/);
+const mod = { nome: "Modelo oficial da unidade — TR mobiliário", texto: "z".repeat(300), papel: "modelo" };
+const um = montarMensagens(AGENTES.find((a) => a.id === "a2-consistencia"), P, [rel, mod])[1].content;
+assert.match(um, /# MODELOS DA UNIDADE/);
+assert.match(um, /MODELO DA UNIDADE \(não revisar\): Modelo oficial/);
+assert.ok(agentesAplicaveis([rel, mod]).includes("a2-consistencia"));
 console.log("runner-check OK");
 
 // ── Controlador: regressão e extração da proposta ──────────────────────────────

@@ -12,12 +12,21 @@ const { semSumario } = T;
 
 export type AgenteId = "a1-revisor" | "a2-consistencia" | "a3-conformidade" | "a4-estrutura" | "a5-dados" | "a6-inconsistencias";
 /** papel "referencia" = fonte (currículo, e-mail, nota…): não é revisado, só serve para conferir o que os outros dizem. */
-export interface Documento { nome: string; texto: string; papel?: "revisar" | "referencia" }
-const ehRef = (d: Documento) => d.papel === "referencia";
+// papel "modelo" = modelo da caixinha da unidade (base de modelos): padrão para comparar, nunca revisado.
+export interface Documento { nome: string; texto: string; papel?: "revisar" | "referencia" | "modelo" }
+const ehRef = (d: Documento) => d.papel === "referencia" || d.papel === "modelo";
+
+const REGRAS_MODELO = (modelos: Documento[]) => `# MODELOS DA UNIDADE
+Modelos: ${modelos.map((d) => d.nome).join("; ")}.
+- São o padrão da caixinha da unidade para aquele tipo de documento. Compare cada documento a revisar com o modelo do MESMO tipo (TR com TR, ETP com ETP…).
+- Aponte, NO documento a revisar: seção/cláusula que o modelo tem e o documento não tem; e redação padrão do modelo que foi alterada de forma que muda o efeito (prazos, sanções, garantias, obrigações, pagamento, fiscalização, recebimento).
+- NÃO aponte diferenças próprias do objeto (descrição, especificação, quantidades, valores, datas, nomes) — o modelo é de outro processo. Nunca aponte problema no modelo.
+- Use uma linha Trecho (<nome do modelo>): "..." com a redação do modelo, e Trecho (<documento>): "..." ou (ausente).
+- Modelo marcado "exemplo" (e não "modelo oficial") é só inspiração: no máximo [BAIXA]. Com modelo oficial: [MÉDIA] para cláusula faltando ou efeito alterado; [BAIXA] para redação diferente sem efeito.`;
 
 const REGRAS_REFERENCIA = (revisar: Documento[], refs: Documento[]) => `# PAPEL DOS DOCUMENTOS
 Documentos A REVISAR: ${revisar.map((d) => d.nome).join("; ")}.
-Documentos de REFERÊNCIA: ${refs.map((d) => d.nome).join("; ")}.
+Documentos de REFERÊNCIA: ${refs.filter((d) => d.papel !== "modelo").map((d) => d.nome).join("; ") || "(nenhum)"}.
 - Documentos de referência (currículos, e-mails, atas, notas, comprovantes…) são FONTES. Nunca aponte problema neles, não cobre campos ausentes neles e não aplique o checklist de campos a eles — o checklist vale só entre documentos a revisar.
 - Use-os para conferir o que os documentos a revisar AFIRMAM sobre eles: nomes, cargos, formação, datas, períodos, números, valores, quantidades, nº de documento/processo, títulos e citações.
 - Cada divergência é apontada NO documento a revisar ("onde" = local no documento a revisar), com o Trecho do documento a revisar e um Trecho (<nome da referência>) com o que a fonte diz.
@@ -101,9 +110,10 @@ export function montarMensagens(agente: Agente, prompts: Prompts, docs: Document
   const ferramentas = revisar.map((d) => ({ documento: d.nome, ...agente.preTools(semSumario(d.texto)) }));
   const user = [
     ...(refs.length ? [REGRAS_REFERENCIA(revisar, refs)] : []),
+    ...(refs.some((d) => d.papel === "modelo") ? [REGRAS_MODELO(refs.filter((d) => d.papel === "modelo"))] : []),
     `# RESULTADO DAS FERRAMENTAS (já executadas)\n${JSON.stringify(ferramentas.length === 1 ? ferramentas[0] : ferramentas)}`,
     // sem referências o texto fica idêntico ao de antes (não invalida o cache das revisões já feitas)
-    ...docs.map((d) => `# ${!refs.length ? "DOCUMENTO" : ehRef(d) ? "DOCUMENTO DE REFERÊNCIA (não revisar)" : "DOCUMENTO A REVISAR"}: ${d.nome}\n${d.texto}`),
+    ...docs.map((d) => `# ${!refs.length ? "DOCUMENTO" : d.papel === "modelo" ? "MODELO DA UNIDADE (não revisar)" : ehRef(d) ? "DOCUMENTO DE REFERÊNCIA (não revisar)" : "DOCUMENTO A REVISAR"}: ${d.nome}\n${d.texto}`),
   ].join("\n\n");
   return [{ role: "system", content: system }, { role: "user", content: user }];
 }
