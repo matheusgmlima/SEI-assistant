@@ -40,4 +40,17 @@ assert.ok(e[0].pontos > e[2].pontos);
 const grupos = [{ nome: "BID", unidades: ["UGP - BID", "COORD. AQUISIÇÕES - BID"] }];
 assert.equal(grupoDaUnidade(grupos, "ugp  - bid"), "BID");
 assert.equal(grupoDaUnidade(grupos, "SEAD"), "SEAD");
+// Rascunho gerado: seções, trechos marcados numerados em ordem, pendências; marca quebrada não some.
+const { lerRascunho } = await import("../src/base/gerar.ts");
+const r = lerRascunho([
+  "=== 1. DO OBJETO", "Aquisição de {{120 cadeiras::quantidade do DFD, confirme}} para o {{[PREENCHER: local]::não consta}}.",
+  "=== 2. DAS SANÇÕES", "Multa de 10% sobre o valor.", "Texto com {{marca quebrada sem motivo}}.",
+  "=== PENDÊNCIAS", "- Anexar pesquisa de preços", "• Confirmar dotação",
+].join("\n"));
+assert.deepEqual(r.secoes.map((x) => x.titulo), ["1. DO OBJETO", "2. DAS SANÇÕES"]);
+assert.equal(r.pontos.length, 2);
+assert.deepEqual(r.pontos.map((p) => [p.n, p.trecho, p.secao]), [[1, "120 cadeiras", "1. DO OBJETO"], [2, "[PREENCHER: local]", "1. DO OBJETO"]]);
+assert.equal(r.secoes[0].paragrafos[0].map((x) => x.texto).join(""), "Aquisição de 120 cadeiras para o [PREENCHER: local].");
+assert.match(r.secoes[1].paragrafos[1][0].texto, /marca quebrada/);
+assert.deepEqual(r.pendencias, ["Anexar pesquisa de preços", "Confirmar dotação"]);
 console.log("base-check OK");

@@ -7,11 +7,12 @@ import { deriveStatus, extractImportantDocs, cleanDocTitle } from "@shared/index
 import { MODELOS, MODELO_PADRAO, LITELLM_URL, normalizarConfig, configLegada, type AiConfig } from "@shared/agents/llm";
 import { RevisaoPanel, ControladorScreen } from "./Revisao";
 import { BaseScreen } from "./Base";
+import { GerarPanel } from "./Gerar";
 import { Icon, ScreenHeader, type NomeIcone } from "./ui";
 
 // ─── Tipos de view ──────────────────────────────────────────────────────────────
 type View = "main" | "processes" | "processDetail" | "settings" | "controlador" | "base";
-type DetailTab = "resumo" | "tramitacao" | "auditoria" | "perguntar" | "revisao";
+type DetailTab = "resumo" | "tramitacao" | "auditoria" | "perguntar" | "revisao" | "gerar";
 
 // ─── Tramitação — tipos e lógica ────────────────────────────────────────────────
 
@@ -1246,6 +1247,7 @@ const DETAIL_TABS: { id: DetailTab; label: string; icon: NomeIcone }[] = [
   { id: "auditoria", label: "Auditoria", icon: "escudo" },
   { id: "perguntar", label: "Perguntar", icon: "conversa" },
   { id: "revisao", label: "Revisar", icon: "revisar" },
+  { id: "gerar", label: "Gerar", icon: "nova" },
 ];
 
 // ── Tela: Detalhe do processo ───────────────────────────────────────────────────
@@ -1290,10 +1292,12 @@ function ProcessDetailScreen({
   processId,
   onBack,
   onSettings,
+  onBase,
 }: {
   processId: string;
   onBack: () => void;
   onSettings: () => void;
+  onBase: () => void;
 }) {
   const { moved, dismiss: dismissMoved } = useMoved(processId);
   const { details, summarizing, summaryError, generateSummary } = useProcessDetails(processId);
@@ -1417,6 +1421,10 @@ function ProcessDetailScreen({
               </button>
             ))}
           </div>
+
+          {tab === "gerar" && (
+            <GerarPanel processId={processId} details={details} hasApiKey={hasApiKey} onSettings={onSettings} onBase={onBase} />
+          )}
 
           {/* Aba: Revisão por agentes */}
           {tab === "revisao" && (
@@ -1981,6 +1989,7 @@ function ActiveScreen({ session }: { session: SessionInfo }) {
         processId={selectedProcess}
         onBack={() => setView(detailFrom)}
         onSettings={() => setView("settings")}
+        onBase={() => setView("base")}
       />
     );
   }

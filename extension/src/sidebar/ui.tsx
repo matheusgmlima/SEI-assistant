@@ -30,6 +30,7 @@ const P: Record<string, string> = {
   enviar: "M22 2L11 13M22 2l-7 20-4-9-9-4z",
   lixo: "M3 6h18M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2",
   grafico: "M18 20V10M12 20V4M6 20v-6",
+  nova: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M12 18v-6M9 15h6",
   chave: "M21 2l-2 2m-7.6 7.6a5.5 5.5 0 1 1-7.8 7.8 5.5 5.5 0 0 1 7.8-7.8zM15.5 7.5l3 3L22 7l-3-3",
 };
 export type NomeIcone = keyof typeof P;
